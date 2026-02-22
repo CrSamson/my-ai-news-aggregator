@@ -2,10 +2,10 @@ import re
 import json
 import requests
 import feedparser
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from pydantic import BaseModel, AnyHttpUrl, field_validator
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api import (
     NoTranscriptFound,
@@ -14,6 +14,7 @@ from youtube_transcript_api import (
     RequestBlocked,
     CouldNotRetrieveTranscript,
 )
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -32,28 +33,30 @@ REQUEST_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Language priority list — first available language wins.
 DEFAULT_LANGUAGES: tuple[str, ...] = ("en", "en-US", "en-GB")
 
 
 # ---------------------------------------------------------------------------
-# Output types
+# Pydantic model
 # ---------------------------------------------------------------------------
 
-@dataclass
-class VideoMetadata:
+class VideoMetadata(BaseModel):
+    """Validated output schema for a single YouTube video."""
+
     title       : str
     video_id    : str
-    published_at: str
+    url         : AnyHttpUrl
+    published_at: datetime
     description : str
 
-    def to_dict(self) -> dict:
-        return {
-            "title"       : self.title,
-            "video_id"    : self.video_id,
-            "published_at": self.published_at,
-            "description" : self.description,
-        }
+    @field_validator("video_id")
+    @classmethod
+    def must_be_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("video_id must not be empty")
+        return v
+
+    model_config = {"frozen": True}   # instances are immutable once created
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +76,7 @@ class YouTubeScraper:
                  languages: Iterable[str] = DEFAULT_LANGUAGES):
         self.timeout         = timeout
         self.languages       = tuple(languages)
-        self._transcript_api = YouTubeTranscriptApi()   # one Session, reused
+        self._transcript_api = YouTubeTranscriptApi()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -101,10 +104,10 @@ class YouTubeScraper:
     def get_latest_videos(self, channel_id: str,
                           hours: int = 24) -> list[dict]:
         """
-        Return video metadata for videos published within `hours` hours.
+        Return validated video metadata for videos published within `hours` hours.
 
         Returns:
-            List of dicts with keys: title, video_id, published_at, description
+            List of dicts with keys: title, video_id, url, published_at, description
         """
         feed   = feedparser.parse(YT_RSS_URL.format(channel_id=channel_id))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -115,12 +118,18 @@ class YouTubeScraper:
             if published is None or published < cutoff:
                 continue
 
-            videos.append(VideoMetadata(
+            video_id = entry.get("yt_videoid", "")
+
+            metadata = VideoMetadata(
                 title        = entry.get("title", ""),
-                video_id     = entry.get("yt_videoid", ""),
-                published_at = published.isoformat(),
+                video_id     = video_id,
+                url          = f"{YT_BASE_URL}/watch?v={video_id}",
+                published_at = published,
                 description  = self._parse_description(entry),
-            ).to_dict())
+            )
+
+            # model_dump(mode="json") serializes datetime → ISO string, url → string
+            videos.append(metadata.model_dump(mode="json"))
 
         videos.sort(key=lambda v: v["published_at"], reverse=True)
         return videos
@@ -134,12 +143,6 @@ class YouTubeScraper:
           2. Prefer manually created over auto-generated for `self.languages`.
           3. Fall back to any available transcript if none match the language list.
           4. Join all snippet texts into a single string.
-
-        Args:
-            video_id: YouTube video ID (e.g. "dQw4w9WgXcQ")
-
-        Returns:
-            Full transcript as a single string, or None on failure.
         """
         try:
             transcript_list = self._transcript_api.list(video_id)
@@ -150,7 +153,6 @@ class YouTubeScraper:
                 try:
                     transcript = transcript_list.find_generated_transcript(self.languages)
                 except NoTranscriptFound:
-                    # Last resort: accept any available language
                     transcript = transcript_list.find_transcript(
                         [t.language_code for t in transcript_list]
                     )
