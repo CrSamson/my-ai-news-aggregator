@@ -1,4 +1,5 @@
 import feedparser
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -9,34 +10,48 @@ from pydantic import AnyHttpUrl, BaseModel
 # Constants
 # ---------------------------------------------------------------------------
 
-# Confirmed feed pattern: https://www.lesaffaires.com/rss/<category>
-# Categories sourced from lesaffaires.com/flux-rss/
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+# Confirmed URL pattern from lesaffaires.com/flux-rss/:
+# https://www.lesaffaires.com/sections/<section>/<subsection>/feed/
+_BASE = "https://www.lesaffaires.com/sections"
+
 _FEED_URLS: dict[str, str] = {
-    # Top-level
-    "dernieres-nouvelles"    : "https://www.lesaffaires.com/rss/dernieres-nouvelles",
     # Bourse
-    "bourse"                 : "https://www.lesaffaires.com/rss/bourse",
-    "actualites-boursieres"  : "https://www.lesaffaires.com/rss/actualites-boursieres",
-    "analyses"               : "https://www.lesaffaires.com/rss/analyses",
-    "placements"             : "https://www.lesaffaires.com/rss/placements",
-    "revue-des-marches"      : "https://www.lesaffaires.com/rss/revue-des-marches",
+    "actualites-boursieres"    : f"{_BASE}/bourse/actualites-boursieres/feed/",
+    "analyses"                 : f"{_BASE}/bourse/analyses-de-titres/feed/",
+    "placements"               : f"{_BASE}/bourse/placements/feed/",
+    "revue-des-marches"        : f"{_BASE}/bourse/revue-des-marches/feed/",
+    "a-surveiller"             : f"{_BASE}/bourse/a-surveiller/feed/",
     # Économie & finances
-    "economie"               : "https://www.lesaffaires.com/rss/economie",
-    "mes-finances"           : "https://www.lesaffaires.com/rss/mes-finances",
-    "fiscalite"              : "https://www.lesaffaires.com/rss/fiscalite",
-    "immobilier"             : "https://www.lesaffaires.com/rss/immobilier",
+    "economie"                 : f"{_BASE}/economie/nouvelles-economiques/feed/",
+    "mes-finances"             : f"{_BASE}/mes-finances/feed/",
+    "fiscalite"                : f"{_BASE}/mes-finances/fiscalite/feed/",
+    "immobilier"               : f"{_BASE}/mes-finances/immobilier/feed/",
+    "retraite"                 : f"{_BASE}/mes-finances/retraite/feed/",
     # Secteurs
-    "techno"                 : "https://www.lesaffaires.com/rss/techno",
-    "energie"                : "https://www.lesaffaires.com/rss/energie",
-    "commerce-de-detail"     : "https://www.lesaffaires.com/rss/commerce-de-detail",
-    "environnement"          : "https://www.lesaffaires.com/rss/environnement",
-    "politique"              : "https://www.lesaffaires.com/rss/politique",
-    "monde"                  : "https://www.lesaffaires.com/rss/monde",
-    "intelligence-artificielle": "https://www.lesaffaires.com/rss/intelligence-artificielle",
+    "techno"                   : f"{_BASE}/secteurs/techno/feed/",
+    "energie"                  : f"{_BASE}/secteurs/energie-et-ressources-naturelles/feed/",
+    "commerce-de-detail"       : f"{_BASE}/secteurs/commerce-de-detail/feed/",
+    "environnement"            : f"{_BASE}/secteurs/environnement/feed/",
+    "aeronautique"             : f"{_BASE}/secteurs/aeronautique-et-transport/feed/",
+    "manufacturier"            : f"{_BASE}/secteurs/manufacturier/feed/",
     # Mon entreprise
-    "mon-entreprise"         : "https://www.lesaffaires.com/rss/mon-entreprise",
-    "entrepreneuriat"        : "https://www.lesaffaires.com/rss/entrepreneuriat",
-    "management"             : "https://www.lesaffaires.com/rss/management",
+    "entrepreneuriat"          : f"{_BASE}/mon-entreprise/entrepreneuriat-et-pme/feed/",
+    "management"               : f"{_BASE}/mon-entreprise/management-et-rh/feed/",
+    "marketing"                : f"{_BASE}/mon-entreprise/communication-et-marketing/feed/",
+    # Autres
+    "politique"                : f"{_BASE}/politique/feed/",
+    "monde"                    : f"{_BASE}/monde/feed/",
+    "intelligence-artificielle": f"{_BASE}/secteurs/intelligence-artificielle/feed/",
+    "opinions"                 : f"{_BASE}/opinions/feed/",
 }
 
 
@@ -62,12 +77,10 @@ class ArticleMetadata(BaseModel):
 class LesAffairesRSS:
     """
     Fetches Les Affaires RSS feeds and returns recent articles as plain dicts.
-
     Supported categories: see _FEED_URLS keys above.
-    Default look-back window: 24 hours.
     """
 
-    def __init__(self, hours: int = 24) -> None:
+    def __init__(self, hours: int) -> None:
         self.default_hours = hours
 
     def get_latest(self, category: str, hours: int | None = None) -> List[dict]:
@@ -78,7 +91,7 @@ class LesAffairesRSS:
                 f"Available: {', '.join(_FEED_URLS)}"
             )
 
-        feed   = feedparser.parse(url)
+        feed   = feedparser.parse(url, request_headers=_HEADERS)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours or self.default_hours)
 
         results = []
@@ -98,7 +111,7 @@ class LesAffairesRSS:
         return results
 
     def get_latest_all(self, hours: int | None = None) -> List[dict]:
-        """Fetch and merge articles from all categories, deduped by URL."""
+        """Fetch and merge all categories, deduped by URL."""
         seen   : set[str] = set()
         results: List[dict] = []
 
@@ -131,17 +144,50 @@ class LesAffairesRSS:
 
 
 # ---------------------------------------------------------------------------
+# URL validator  —  run:  python lesaffaires_rss.py --validate
+# ---------------------------------------------------------------------------
+
+def validate_feeds() -> None:
+    """Probe every feed URL and print a live status report."""
+    print(f"{'CATEGORY':<30} {'STATUS':>6}  {'ENTRIES':>7}  NOTE")
+    print("-" * 65)
+
+    for name, url in _FEED_URLS.items():
+        try:
+            req = urllib.request.Request(url, headers=_HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                http_status  = resp.status
+                content_type = resp.headers.get("Content-Type", "")
+
+            feed    = feedparser.parse(url, request_headers=_HEADERS)
+            entries = len(feed.entries)
+            note    = content_type.split(";")[0].strip()
+
+            if "html" in content_type.lower():
+                note = "WARNING: HTML returned — wrong URL or redirect"
+
+            print(f"{name:<30} {http_status:>6}  {entries:>7}  {note}")
+
+        except urllib.error.HTTPError as e:
+            print(f"{name:<30} {e.code:>6}  {'N/A':>7}  {e.reason}")
+        except Exception as e:
+            print(f"{name:<30} {'ERR':>6}  {'N/A':>7}  {e}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import json
+    import sys
 
-    scraper = LesAffairesRSS(hours=24)
-
-    for cat in ("dernieres-nouvelles", "bourse", "economie", "techno"):
-        articles = scraper.get_latest(cat)
-        print(f"\n── {cat.upper()} ({len(articles)} articles) ──")
-        for a in articles:
-            print(f"  {a['published']}  {a['title']}")
-            print(f"  {a['url']}\n")
+    if "--validate" in sys.argv:
+        validate_feeds()
+    else:
+        scraper = LesAffairesRSS(hours=100)
+        for cat in ("actualites-boursieres", "economie", "techno"):
+            articles = scraper.get_latest(cat)
+            print(f"\n── {cat.upper()} ({len(articles)} articles) ──")
+            for a in articles:
+                print(f"  {a['published']}  {a['title']}")
+                print(f"  {a['url']}\n")
