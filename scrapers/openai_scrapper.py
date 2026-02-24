@@ -19,7 +19,7 @@ class OpenAIScraper:
         self.feed_url = "https://openai.com/news/rss.xml"
         self.converter = DocumentConverter()
 
-    def fetch_articles(self, hours: int = 24) -> List[OpenAIArticle]:
+    def fetch_articles(self, hours: int = 100) -> List[OpenAIArticle]:
         feed = feedparser.parse(self.feed_url)
         if not feed.entries:
             print("No entries found in the feed.")
@@ -31,18 +31,17 @@ class OpenAIScraper:
             published_parsed = getattr(entry, 'published_parsed', None)
             if not published_parsed:
                 continue
-        
-        published_time = datetime(*published_parsed[:6])
-        tzinfo = timezone.utc
-        if published_time >= cutoff_time:
-            articles.append(OpenAIArticle(
-                title=entry.get("title", ""),
-                description=entry.get("description", ""),
-                url=entry.get("url", ""),
-                published_at=published_time,
-                category=entry.get("tags", [{}])[0].get("term") if entry.get("tags") else None)
-            )
-        return articles
+            published_time = datetime(*published_parsed[:6], tzinfo=timezone.utc)
+            
+            if published_time >= cutoff_time:
+                articles.append(OpenAIArticle(
+                    title=entry.get("title", ""),
+                    description=entry.get("description", ""),
+                    url=entry.get("url", ""),
+                    published_at=published_time,
+                    category=entry.get("tags", [{}])[0].get("term") if entry.get("tags") else None)
+                )
+            return articles
     
     def url_to_markdown(self, url: str) -> Optional[str]:
         try:
@@ -53,8 +52,8 @@ class OpenAIScraper:
             return None
 
 if __name__ == "__main__":
-    scraper = OpenAIScraper()
-    articles = scraper.fetch_articles(hours=24)
+    scraper = OpenAIScraper(feed_url="https://openai.com/news/rss.xml")
+    articles = scraper.fetch_articles(hours=100)
     for article in articles:
         print(f"Title: {article.title}")
         print(f"Description: {article.description}")
