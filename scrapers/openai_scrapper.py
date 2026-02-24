@@ -53,7 +53,7 @@ class OpenAIScraper:
 
 if __name__ == "__main__":
     scraper = OpenAIScraper(feed_url="https://openai.com/news/rss.xml")
-    articles = scraper.fetch_articles(hours=100)
+    articles = scraper.fetch_articles(hours=24)
     for article in articles:
         print(f"Title: {article.title}")
         print(f"Description: {article.description}")
