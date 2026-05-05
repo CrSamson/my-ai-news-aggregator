@@ -2,11 +2,9 @@
 app/database/models.py — SQLAlchemy ORM models.
 
 Tables:
-  • Article       — any blog/news post from any source. Conflict key: url.
-  • Paper         — arXiv / HF Daily Papers entries. Conflict key: arxiv_id
-                    (partial unique index, with url unique as fallback).
-  • YoutubeVideo  — YouTube video metadata + transcript.
-                    Conflict key: video_id.
+  • Article  — any blog/news post from any source. Conflict key: url.
+  • Paper    — arXiv / HF Daily Papers entries. Conflict key: arxiv_id
+               (partial unique index, with url unique as fallback).
 """
 
 from sqlalchemy import (
@@ -25,46 +23,6 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
-
-
-class YoutubeVideo(Base):
-    """
-    Stores YouTube video metadata + transcript from every configured channel.
-
-    Unique key: video_id  (YouTube's 11-char video identifier)
-    """
-
-    __tablename__ = "youtube_videos"
-
-    id             = Column(BigInteger, primary_key=True, autoincrement=True)
-
-    # --- scraper fields (VideoMetadata.model_dump) ---
-    title          = Column(String(512),  nullable=False)
-    video_id       = Column(String(32),   nullable=False, unique=True)  # conflict key
-    url            = Column(String(2048), nullable=False)
-    published_at   = Column(DateTime(timezone=True), nullable=False)
-    description    = Column(Text,         nullable=False, default="")
-
-    # --- fields added by runner.py ---
-    channel_handle = Column(String(256),  nullable=False, default="")   # e.g. "@Fireship"
-    transcript     = Column(Text,         nullable=False, default="")
-    summary        = Column(Text,         nullable=False, default="")   # LLM-generated per-row summary
-
-    # NULL = not yet included in a sent digest. Set to NOW() once an email
-    # containing this row goes out successfully. Filtered by the digest queries
-    # so the same row never ships in two emails.
-    digest_sent_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Topic tags inherited from channels.json config (e.g. ["ai", "technology"]).
-    # Populated at insert time; refreshed on conflict so config edits propagate.
-    topics         = Column(ARRAY(String), nullable=False,
-                            server_default=text("ARRAY[]::varchar[]"))
-
-    # --- housekeeping ---
-    created_at     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    def __repr__(self) -> str:
-        return f"<YoutubeVideo id={self.id} video_id={self.video_id!r} title={self.title!r}>"
 
 
 class Article(Base):
@@ -91,7 +49,9 @@ class Article(Base):
     content_fetched = Column(Boolean,     nullable=False,
                              default=False, server_default=text("false"))
 
-    # NULL = not yet included in a sent digest. See YoutubeVideo.digest_sent_at.
+    # NULL = not yet included in a sent digest. Set to NOW() once an email
+    # containing this row goes out successfully. Filtered by the digest queries
+    # so the same row never ships in two emails.
     digest_sent_at  = Column(DateTime(timezone=True), nullable=True)
 
     # Topic tags inherited from sources.json config (e.g. ["ai", "technology"]).
@@ -146,7 +106,7 @@ class Paper(Base):
 
     summary           = Column(Text,        nullable=True)              # LLM-generated, set later
 
-    # NULL = not yet included in a sent digest. See YoutubeVideo.digest_sent_at.
+    # NULL = not yet included in a sent digest. See Article.digest_sent_at.
     digest_sent_at    = Column(DateTime(timezone=True), nullable=True)
 
     # Topic tags inherited from sources.json config. For papers, the union of

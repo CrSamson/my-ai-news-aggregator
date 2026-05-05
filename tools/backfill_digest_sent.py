@@ -2,11 +2,11 @@
 tools/backfill_digest_sent.py - one-shot, run ONCE after deploying the
 digest_sent_at column.
 
-Stamps `digest_sent_at = NOW()` on every row of articles / papers /
-youtube_videos that already has a non-empty summary. The reasoning:
-those rows were ingested + summarised before the column existed, so they
-are already in past digest emails. Without this backfill, tomorrow's
-first cron run would treat them as "never sent" and re-include them.
+Stamps `digest_sent_at = NOW()` on every row of articles / papers that
+already has a non-empty summary. The reasoning: those rows were ingested
++ summarised before the column existed, so they are already in past
+digest emails. Without this backfill, tomorrow's first cron run would
+treat them as "never sent" and re-include them.
 
 Idempotent: re-running just refreshes the timestamp on already-marked
 rows; rows summarised AFTER this script runs stay NULL until a real
@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import func, or_, select, update
 
 from app.database.db import get_db
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 
 
 def _eligible_filter(model):
@@ -41,15 +41,11 @@ def _eligible_filter(model):
       - Its digest_sent_at is currently NULL (we don't refresh already-
         marked rows; that would lose information).
 
-    For YoutubeVideo.summary the column is NOT NULL DEFAULT '', so we
-    only need a `!= ''` check. For Article/Paper.summary the column is
-    nullable, so we exclude both NULL and ''.
+    Article and Paper both have nullable summary columns, so we exclude
+    both NULL and ''.
     """
     summary = model.summary
-    if model is YoutubeVideo:
-        summary_filter = summary != ""
-    else:
-        summary_filter = summary.isnot(None) & (summary != "")
+    summary_filter = summary.isnot(None) & (summary != "")
     return summary_filter & model.digest_sent_at.is_(None)
 
 
@@ -63,7 +59,7 @@ def main() -> int:
 
     total_marked = 0
     with get_db() as db:
-        for model in (Article, Paper, YoutubeVideo):
+        for model in (Article, Paper):
             tname = model.__tablename__
 
             # Count first.

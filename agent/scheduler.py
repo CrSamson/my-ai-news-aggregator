@@ -3,7 +3,7 @@ agent/scheduler.py — Daily pipeline driver.
 
 Runs the full pipeline once per day at a configurable local time:
 
-    1. Scrape RSS sources (Anthropic blogs + YouTube channels)
+    1. Scrape RSS sources (blogs + papers)
     2. Summarize any rows still missing a summary
     3. Build and email the digest
 
@@ -48,14 +48,12 @@ from agent.summarizer import Summarizer
 from app.database.crud import (
     get_unsummarized_articles,
     get_unsummarized_papers,
-    get_unsummarized_youtube_videos,
     mark_digest_sent,
     set_article_summary,
     set_paper_summary,
-    set_youtube_summary,
 )
 from app.database.db import get_db
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 from runner import Runner
 
 
@@ -76,9 +74,9 @@ log = logging.getLogger("scheduler")
 
 def _scrape(hours: int) -> None:
     log.info("step 1/3 — scraping (lookback=%dh)", hours)
-    # Per-source content fetching is now configured in config/sources.json,
+    # Per-source content fetching is configured in config/sources.json,
     # not via the Runner constructor.
-    Runner(hours=hours, fetch_transcripts=True).run()
+    Runner(hours=hours).run()
 
 
 def _summarize() -> None:
@@ -87,9 +85,8 @@ def _summarize() -> None:
     with get_db() as db:
         articles = get_unsummarized_articles(db)
         papers   = get_unsummarized_papers(db)
-        videos   = get_unsummarized_youtube_videos(db)
-        log.info("  %d article(s), %d paper(s), %d video(s) to summarize",
-                 len(articles), len(papers), len(videos))
+        log.info("  %d article(s), %d paper(s) to summarize",
+                 len(articles), len(papers))
 
         for a in articles:
             try:
@@ -105,23 +102,16 @@ def _summarize() -> None:
             except Exception as e:  # noqa: BLE001
                 log.warning("    paper id=%s failed: %s", p.id, e)
 
-        for v in videos:
-            try:
-                summary, topics = summarizer.summarize_youtube_video(v)
-                set_youtube_summary(db, v.id, summary, topics=topics)
-            except Exception as e:  # noqa: BLE001
-                log.warning("    video id=%s failed: %s", v.id, e)
-
 
 def _email_digest(hours: int, max_items: int | None = None) -> None:
     log.info("step 3/3 — building + sending digest (window=%dh, max_items=%s)",
              hours, max_items)
-    articles, papers, videos = build_digest(hours=hours)
-    pre_total = len(articles) + len(papers) + len(videos)
+    articles, papers = build_digest(hours=hours)
+    pre_total = len(articles) + len(papers)
 
     # max_items=None means no cap — use a huge number so quotas don't trim.
     cap = max_items if max_items is not None else (pre_total or 1)
-    by_topic = cap_by_topic(articles, papers, videos, max_items=cap)
+    by_topic = cap_by_topic(articles, papers, max_items=cap)
     total = sum(len(items) for items in by_topic.values())
     if total < pre_total:
         log.info("  capped from %d to %d items (max_items=%s)",
@@ -158,13 +148,12 @@ def _email_digest(hours: int, max_items: int | None = None) -> None:
 
     # Mark every row that was actually emailed so it never ships twice. We
     # mark AFTER the send so an SMTP failure leaves rows unsent for retry.
-    sent_articles, sent_papers, sent_videos = flatten_by_topic(by_topic)
+    sent_articles, sent_papers = flatten_by_topic(by_topic)
     try:
         with get_db() as db:
-            n_a = mark_digest_sent(db, Article,      [a.id for a in sent_articles])
-            n_p = mark_digest_sent(db, Paper,        [p.id for p in sent_papers])
-            n_v = mark_digest_sent(db, YoutubeVideo, [v.id for v in sent_videos])
-        log.info("  marked sent: %d article(s), %d paper(s), %d video(s)", n_a, n_p, n_v)
+            n_a = mark_digest_sent(db, Article, [a.id for a in sent_articles])
+            n_p = mark_digest_sent(db, Paper,   [p.id for p in sent_papers])
+        log.info("  marked sent: %d article(s), %d paper(s)", n_a, n_p)
     except Exception as e:  # noqa: BLE001 - mark failure is recoverable
         log.warning("  send succeeded but mark_digest_sent failed: %s", e)
 
@@ -254,9 +243,9 @@ def main() -> None:
                         help="Override SCHEDULE_HOURS_LOOKBACK (default: env or 24).")
     parser.add_argument("--max-items", type=int, default=None,
                         help="Cap total items in the digest. Quotas split evenly "
-                             "across DIGEST_TOPIC_ORDER (4 topics → 4/4/4/3 at "
+                             "across DIGEST_TOPIC_ORDER (5 topics → 3/3/3/3/3 at "
                              "max=15) with per-source diversity (max 2 items per "
-                             "source/channel within a topic). "
+                             "source within a topic). "
                              "Default: env DIGEST_MAX_ITEMS, or unlimited.")
     args = parser.parse_args()
 

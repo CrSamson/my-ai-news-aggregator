@@ -13,7 +13,7 @@ from sqlalchemy import func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 from scrapers.schemas import BlogArticle, Paper as PaperItem
 
 
@@ -31,106 +31,6 @@ def _digest_cutoff(hours: int) -> datetime:
     return (
         datetime.now(timezone.utc) - timedelta(hours=hours)
     ).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-# ===================================================================
-# YouTube Videos
-# ===================================================================
-
-def upsert_youtube_video(db: Session, data: dict) -> YoutubeVideo:
-    """
-    Insert or update a single YouTube video (conflict key: video_id).
-
-    `data` is the dict produced by runner._scrape_youtube() which contains
-    scraper fields + "channel" (mapped to channel_handle) + "transcript".
-    """
-    values = {
-        "title":          data["title"],
-        "video_id":       data["video_id"],
-        "url":            str(data["url"]),
-        "published_at":   data["published_at"],
-        "description":    data.get("description", ""),
-        "channel_handle": data.get("channel", data.get("channel_handle", "")),
-        "transcript":     data.get("transcript", ""),
-        "topics":         list(data.get("topics", [])),
-    }
-
-    stmt = (
-        pg_insert(YoutubeVideo)
-        .values(**values)
-        .on_conflict_do_update(
-            index_elements=["video_id"],
-            set_={
-                "title":          values["title"],
-                "description":    values["description"],
-                "channel_handle": values["channel_handle"],
-                "transcript":     values["transcript"],
-                # One channel per video -> overwrite topics with latest config.
-                "topics":         values["topics"],
-            },
-        )
-        .returning(YoutubeVideo)
-    )
-
-    row = db.execute(stmt).scalars().first()
-    return row
-
-
-def upsert_youtube_videos(db: Session, videos: list[dict]) -> list[YoutubeVideo]:
-    """Upsert a batch of YouTube videos. Returns the list of ORM objects."""
-    rows = []
-    for video in videos:
-        rows.append(upsert_youtube_video(db, video))
-    db.flush()
-    return rows
-
-
-def get_all_youtube_videos(db: Session) -> list[YoutubeVideo]:
-    """Return all YouTube videos, newest first."""
-    stmt = select(YoutubeVideo).order_by(YoutubeVideo.published_at.desc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def get_unsummarized_youtube_videos(db: Session, limit: Optional[int] = None) -> list[YoutubeVideo]:
-    """Return YouTube videos whose `summary` is empty, newest first."""
-    stmt = (
-        select(YoutubeVideo)
-        .where(YoutubeVideo.summary == "")
-        .order_by(YoutubeVideo.published_at.desc())
-    )
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return list(db.execute(stmt).scalars().all())
-
-
-def set_youtube_summary(
-    db: Session,
-    video_id: int,
-    summary: str,
-    topics: list[str] | None = None,
-) -> None:
-    """Persist a generated summary for one YouTube video. If `topics` is
-    provided (LLM-classified), it overwrites the source-declared tags."""
-    video = db.get(YoutubeVideo, video_id)
-    if video is None:
-        raise ValueError(f"YoutubeVideo id={video_id} not found")
-    video.summary = summary
-    if topics is not None:
-        video.topics = topics
-
-
-def get_recent_summarized_youtube_videos(db: Session, hours: int) -> list[YoutubeVideo]:
-    """Return YouTube videos published in the last `hours` hours that have a
-    non-empty summary AND have not already been included in a sent digest."""
-    cutoff = _digest_cutoff(hours)
-    stmt = (
-        select(YoutubeVideo)
-        .where(YoutubeVideo.summary != "")
-        .where(YoutubeVideo.published_at >= cutoff)
-        .where(YoutubeVideo.digest_sent_at.is_(None))
-        .order_by(YoutubeVideo.published_at.desc())
-    )
-    return list(db.execute(stmt).scalars().all())
 
 
 # ===================================================================
@@ -496,8 +396,7 @@ def mark_digest_sent(db: Session, model, ids: list[int]) -> int:
     Returns the number of rows updated.
 
     Idempotent: re-applying to the same ids just refreshes the timestamp.
-    `model` must have a `digest_sent_at` column - works for Article, Paper,
-    and YoutubeVideo.
+    `model` must have a `digest_sent_at` column - works for Article and Paper.
     """
     if not ids:
         return 0

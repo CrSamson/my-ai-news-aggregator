@@ -1,11 +1,10 @@
 """
 tools/backfill_topics.py — Phase 2 one-shot.
 
-Stamps `topics` on every existing row of articles / papers / youtube_videos
-based on its `source` (or `channel_handle` for videos), reading the topic
-mapping from config/sources.json + config/channels.json. Idempotent: rows
-that already have the right topic array stay unchanged; re-runs report 0
-updates.
+Stamps `topics` on every existing row of articles / papers based on its
+`source`, reading the topic mapping from config/sources.json. Idempotent:
+rows that already have the right topic array stay unchanged; re-runs report
+0 updates.
 
 Without this backfill, every existing row has `topics = '{}'` (the default
 from the additive ALTER), and the digest's per-topic queries would treat
@@ -27,12 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import func, select, update
 
 from app.database.db import get_db
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 
 
 PROJECT_ROOT  = Path(__file__).resolve().parents[1]
 SOURCES_FILE  = PROJECT_ROOT / "config" / "sources.json"
-CHANNELS_FILE = PROJECT_ROOT / "config" / "channels.json"
 
 
 def _load_source_topics() -> dict[str, list[str]]:
@@ -66,13 +64,6 @@ def _load_paper_type_topics() -> dict[str, list[str]]:
             if t not in out.setdefault(ptype, []):
                 out[ptype].append(t)
     return out
-
-
-def _load_channel_topics() -> dict[str, list[str]]:
-    """Map channel_handle -> topics."""
-    with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    return {c["handle"]: list(c.get("topics", [])) for c in cfg.get("youtube_channels", [])}
 
 
 def _backfill_articles(db, source_topics: dict[str, list[str]], dry_run: bool) -> tuple[int, int]:
@@ -130,28 +121,6 @@ def _backfill_papers(db, paper_type_topics: dict[str, list[str]], dry_run: bool)
     return eligible_pre, updated
 
 
-def _backfill_youtube(db, channel_topics: dict[str, list[str]], dry_run: bool) -> tuple[int, int]:
-    eligible_pre = db.execute(
-        select(func.count()).select_from(YoutubeVideo).where(YoutubeVideo.topics == [])
-    ).scalar() or 0
-
-    if dry_run or eligible_pre == 0:
-        return eligible_pre, 0
-
-    updated = 0
-    for handle, topics in channel_topics.items():
-        if not topics:
-            continue
-        result = db.execute(
-            update(YoutubeVideo)
-            .where(YoutubeVideo.channel_handle == handle)
-            .where(YoutubeVideo.topics == [])
-            .values(topics=topics)
-        )
-        updated += result.rowcount or 0
-    return eligible_pre, updated
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
@@ -162,23 +131,19 @@ def main() -> int:
 
     source_topics      = _load_source_topics()
     paper_type_topics  = _load_paper_type_topics()
-    channel_topics     = _load_channel_topics()
     print(f"source_topics:     {len(source_topics)} entries from sources.json (id-keyed, for blogs)")
-    print(f"paper_type_topics: {paper_type_topics} (type-keyed, for papers)")
-    print(f"channel_topics:    {len(channel_topics)} entries from channels.json\n")
+    print(f"paper_type_topics: {paper_type_topics} (type-keyed, for papers)\n")
 
     with get_db() as db:
         a_pre, a_upd = _backfill_articles(db, source_topics,     args.dry_run)
         p_pre, p_upd = _backfill_papers  (db, paper_type_topics, args.dry_run)
-        v_pre, v_upd = _backfill_youtube (db, channel_topics,    args.dry_run)
 
     print(f"  {'table':<20} {'untagged_pre':>14} {'updated':>10}")
     print(f"  {'-'*20} {'-'*14} {'-'*10}")
     print(f"  {'articles':<20} {a_pre:>14} {a_upd:>10}")
     print(f"  {'papers':<20} {p_pre:>14} {p_upd:>10}")
-    print(f"  {'youtube_videos':<20} {v_pre:>14} {v_upd:>10}")
-    total_pre = a_pre + p_pre + v_pre
-    total_upd = a_upd + p_upd + v_upd
+    total_pre = a_pre + p_pre
+    total_upd = a_upd + p_upd
     print(f"  {'TOTAL':<20} {total_pre:>14} {total_upd:>10}")
     print()
 
@@ -194,9 +159,7 @@ def main() -> int:
                             .where(Article.topics == [])).scalar() or 0
         p_post = db.execute(select(func.count()).select_from(Paper)
                             .where(Paper.topics == [])).scalar() or 0
-        v_post = db.execute(select(func.count()).select_from(YoutubeVideo)
-                            .where(YoutubeVideo.topics == [])).scalar() or 0
-    print(f"\npost-state untagged: articles={a_post}, papers={p_post}, youtube_videos={v_post}")
+    print(f"\npost-state untagged: articles={a_post}, papers={p_post}")
     return 0
 
 

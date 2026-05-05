@@ -4,7 +4,7 @@ Re-exports the most commonly used symbols for convenience.
 """
 
 from .db import engine, SessionLocal, get_db
-from .models import Base, Article, Paper, YoutubeVideo
+from .models import Base, Article, Paper
 from .crud import (
     upsert_articles,
     get_all_articles,
@@ -17,12 +17,6 @@ from .crud import (
     get_unsummarized_papers,
     set_paper_summary,
     get_recent_summarized_papers,
-    upsert_youtube_video,
-    upsert_youtube_videos,
-    get_all_youtube_videos,
-    get_unsummarized_youtube_videos,
-    set_youtube_summary,
-    get_recent_summarized_youtube_videos,
     mark_digest_sent,
 )
 
@@ -33,7 +27,6 @@ __all__ = [
     "Base",
     "Article",
     "Paper",
-    "YoutubeVideo",
     "upsert_articles",
     "get_all_articles",
     "get_unsummarized_articles",
@@ -45,11 +38,5 @@ __all__ = [
     "get_unsummarized_papers",
     "set_paper_summary",
     "get_recent_summarized_papers",
-    "upsert_youtube_video",
-    "upsert_youtube_videos",
-    "get_all_youtube_videos",
-    "get_unsummarized_youtube_videos",
-    "set_youtube_summary",
-    "get_recent_summarized_youtube_videos",
     "mark_digest_sent",
 ]

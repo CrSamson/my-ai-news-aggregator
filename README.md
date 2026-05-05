@@ -1,18 +1,16 @@
 # AI News Aggregator
 
-> Pulls fresh AI news from **10 RSS blog sources**, **arXiv (cs.LG + cs.AI)**, **HuggingFace Daily Papers**, and **4 YouTube channels**. Stores everything in **Neon Postgres**, summarises each item with an LLM (kind-specific prompts), and emails a daily HTML digest with three sections: Articles, Papers, YouTube. Runs on **GitHub Actions** at 08:00 Montreal time, every day.
+> Pulls fresh AI news from **10 RSS blog sources**, **arXiv (cs.LG + cs.AI)**, and **HuggingFace Daily Papers**. Stores everything in **Neon Postgres**, summarises each item with an LLM (kind-specific prompts), and emails a daily HTML digest with two sections: Articles, Papers. Runs on **GitHub Actions** at 08:00 Montreal time, every day.
 
 ## 🎯 Objective
 
 Keep up with AI without ad-hoc tab-checking. Every morning a GitHub Actions runner fires up, scrapes a configurable list of trusted sources for the last *N* hours, summarises new rows with GPT-4o, and ships a single HTML email so the reader can decide in seconds what to click.
 
 The summariser uses **two system prompts** depending on source kind:
-- **Articles + video transcripts** → busy-practitioner blurb, 2–4 sentences, specifics over generalities.
+- **Articles** → busy-practitioner blurb, 2–4 sentences, specifics over generalities.
 - **Papers** → plain-English explainer for a general audience, 3–5 sentences, jargon defined inline only when load-bearing.
 
-The pipeline is end-to-end and intentionally **single-user**: one recipient, one source list. Sources are config-driven:
-- Blog and paper sources: [config/sources.json](config/sources.json)
-- YouTube channels: [config/channels.json](config/channels.json)
+The pipeline is end-to-end and intentionally **single-user**: one recipient, one source list. Sources are config-driven in [config/sources.json](config/sources.json).
 
 Adding a new RSS blog source is a JSON edit, no scraper to write.
 
@@ -22,13 +20,13 @@ Adding a new RSS blog source is a JSON edit, no scraper to write.
 
 ```mermaid
 flowchart LR
-    Cron[GitHub Actions cron<br/>0 12 * * * UTC] --> Scrape[Step 1: Scrape<br/>10 blogs · arXiv · HF Daily · YouTube]
-    Cfg[sources.json<br/>channels.json] -.config.-> Scrape
+    Cron[GitHub Actions cron<br/>0 12 * * * UTC] --> Scrape[Step 1: Scrape<br/>10 blogs · arXiv · HF Daily]
+    Cfg[sources.json] -.config.-> Scrape
 
-    Scrape --> DB[(Neon Postgres<br/>articles · papers · youtube_videos)]
+    Scrape --> DB[(Neon Postgres<br/>articles · papers)]
     DB --> Sum[Step 2: Summarize<br/>GPT-4o, dual prompts]
     Sum --> DB
-    DB --> Dig[Step 3: Digest<br/>4/4/2 balanced + per-source diversity]
+    DB --> Dig[Step 3: Digest<br/>topic-balanced + per-source diversity]
     Dig --> Mail[SMTP → inbox]
 ```
 
@@ -38,8 +36,7 @@ flowchart LR
 - **RSS / Atom parsing**: `feedparser`
 - **HTTP**: `requests`
 - **Article content extraction (optional, per-source)**: [Docling](https://github.com/docling-project/docling) — URL → markdown
-- **YouTube transcripts**: [`youtube-transcript-api`](https://github.com/jdepoix/youtube-transcript-api) — no Google API key required
-- **Validation**: Pydantic v2 (`BlogArticle`, `Paper`, `VideoMetadata`)
+- **Validation**: Pydantic v2 (`BlogArticle`, `Paper`)
 - **Database**: **Neon Postgres** (managed, free-tier — 500 MB / 191.9 compute-hours per month) accessed via SQLAlchemy 2.x ORM
   - Idempotent upserts via `INSERT … ON CONFLICT DO UPDATE`
   - Insert-vs-update distinguished via Postgres' `xmax = 0` trick
@@ -61,23 +58,19 @@ flowchart LR
 2 paper sources:
 `arxiv_cs_lg_ai` (Atom API, `cs.LG ∪ cs.AI`, `max_results=10`), `hf_daily_papers` (GitHub mirror primary so `hf_upvotes` populates routinely; takara.ai as fallback).
 
-4 YouTube channels in [config/channels.json](config/channels.json).
-
 ### Tables (on Neon)
 
-All three tables carry `digest_sent_at TIMESTAMPTZ NULL` — the timestamp at which the row was first included in a sent digest, or `NULL` if it has never shipped. Used by the digest's no-duplicate filter (see *Digest selection* below).
+Both tables carry `digest_sent_at TIMESTAMPTZ NULL` — the timestamp at which the row was first included in a sent digest, or `NULL` if it has never shipped. Used by the digest's no-duplicate filter (see *Digest selection* below).
 
 - **`articles`** — every blog/news post. Conflict key: `url`. Per-row: `source` (e.g. `anthropic_news`, `openai_news`), `title`, `published_at`, `summary` (LLM, busy-practitioner tone), `content_md` (Docling, optional), `raw_metadata` (JSONB), `digest_sent_at`.
 - **`papers`** — arXiv + HF Daily entries, cross-linked. Conflict key: `arxiv_id` (partial unique). Per-row: `sources TEXT[]` (e.g. `{arxiv,hf_daily}`), `title`, `authors` (JSONB), `abstract`, `categories` (JSONB), `pdf_url`, `hf_upvotes`, `summary` (LLM, plain-English explainer for a general audience), `digest_sent_at`.
-- **`youtube_videos`** — YouTube video metadata + transcript + LLM `summary`. Conflict key: `video_id`. Plus `digest_sent_at`.
 
 ### Digest selection
 
 `cap_balanced` (in [agent/digest.py](agent/digest.py)) takes the most-recent summarised rows in the lookback window and trims them to a hard cap (default `--max-items 10`):
 
-- **Quotas**: `DIGEST_QUOTAS = (0.4, 0.4, 0.2)` → 4 articles + 4 papers + 2 videos at cap=10.
-- **Per-source diversity**: `DIGEST_MAX_PER_SOURCE = 2` → no single publisher (e.g. TechCrunch) can dominate the articles section.
-- **Overflow refill**: empty quota slots refill from the other sections by recency, still respecting per-source caps. So a quiet YouTube day shifts those 2 slots to articles or papers, never wasted.
+- **Topic quotas**: `--max-items` is split evenly across topic sections (5 topics → 3/3/3/3/3 at max=15). Articles and papers compete for the same slots within each topic, sorted by recency.
+- **Per-source diversity**: `DIGEST_MAX_PER_SOURCE = 2` → no single publisher (e.g. TechCrunch) can dominate any topic section. Papers don't enforce this (every paper is unique by arxiv_id).
 - **No duplicate sends**: `get_recent_summarized_*` filters `WHERE digest_sent_at IS NULL`, so a row that has shipped in a previous email is never picked again. After `send_email()` returns, every included row is stamped with `digest_sent_at = NOW()` (see `mark_digest_sent` in [app/database/crud.py](app/database/crud.py)). The mark step runs **after** the SMTP call — an SMTP failure leaves the rows unsent and they get retried on the next cron. `--dry-run` skips the mark entirely. Re-scrapes never reset send state because all upserts omit `digest_sent_at` from their `SET` clauses.
 
 ### Resilience
@@ -99,20 +92,18 @@ brevio-ai/
 │   ├── schemas.py                   # Pydantic v2: BlogArticle, Paper
 │   ├── rss_blog_scraper.py          # Generic RSS scraper, drives off sources.json
 │   ├── arxiv_scraper.py             # Atom API, rate-limited, no PDFs
-│   ├── hf_daily_scraper.py          # Primary + fallback, dual-shape parser
-│   └── youtube_scraper.py           # RSS + transcript + Shorts detection
+│   └── hf_daily_scraper.py          # Primary + fallback, dual-shape parser
 ├── agent/
 │   ├── summarizer.py                # OpenAI gpt-4o, dual prompts (article / paper)
-│   ├── digest.py                    # 3-section HTML + plain-text email + cap_balanced
+│   ├── digest.py                    # Topic-organised HTML + plain-text email + cap_by_topic
 │   └── scheduler.py                 # Pipeline driver (--once for cron, BlockingScheduler for in-process)
 ├── app/database/
 │   ├── db.py                        # Engine + session factory (reads DATABASE_URL)
-│   ├── models.py                    # SQLAlchemy: Article, Paper, YoutubeVideo
+│   ├── models.py                    # SQLAlchemy: Article, Paper
 │   ├── crud.py                      # upsert_articles / upsert_papers / merge_hf_daily_papers / ...
 │   └── create_tables.py             # Idempotent schema init + additive ALTERs
 ├── config/
-│   ├── sources.json                 # blogs + papers config (drives the runner)
-│   └── channels.json                # YouTube channel handles
+│   └── sources.json                 # blogs + papers config (drives the runner)
 ├── tests/
 │   ├── fixtures/                    # saved RSS / Atom snapshots
 │   ├── test_schema.py
@@ -266,7 +257,7 @@ If you flip `fetch_content: true` for blog sources, daily growth jumps to ~1 MB 
 
 What this **isn't**, by design and by current state:
 
-**Single-tenant.** One global `DIGEST_TO`, one global source list. No user table, no auth, no per-user preferences. To change channels: edit [config/channels.json](config/channels.json) or [config/sources.json](config/sources.json).
+**Single-tenant.** One global `DIGEST_TO`, one global source list. No user table, no auth, no per-user preferences. To change sources: edit [config/sources.json](config/sources.json).
 
 **No retry/backoff on OpenAI rate limits.** A failed summary row is logged and stays unsummarised; the next pipeline run picks it up. No exponential backoff inside a single run.
 
@@ -281,8 +272,6 @@ What this **isn't**, by design and by current state:
 **DST drift.** GitHub Actions cron is UTC-only. The daily fire is 08:00 in summer, 07:00 in winter. Acceptable for a personal digest; not acceptable if you ever need precise Montreal-local timing.
 
 Other gotchas:
-- **YouTube transcript scraping is fragile.** `youtube-transcript-api` can be rate-limited or blocked; `RequestBlocked` is caught and logged but the video is stored with an empty transcript.
-- **Channel-handle resolution depends on YouTube HTML.** Four fallback regex strategies cover the common cases, but a layout change upstream would break it.
 - **Anthropic feed source.** Feeds come from [Olshansk/rss-feeds](https://github.com/Olshansk/rss-feeds) on GitHub, not from Anthropic directly — freshness depends on that repo being maintained.
 - **TechCrunch may Cloudflare-block** with a 403 from the runtime UA. Per-source try/except catches it; re-running usually succeeds.
 - **Per-source title cleanup.** Anthropic feed titles arrive prefixed with date + category by the Olshansk mirror; `agent/digest.py:_article_title` strips that prefix only for sources whose id starts with `anthropic_`. A new upstream category leaks through unstripped.

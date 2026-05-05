@@ -1,9 +1,7 @@
 """
 runner.py - orchestrates every scraper for a given time window.
 
-Multi-source plan, Phase 3: the Anthropic-only ingestion path is replaced
-by a generic blog-source loop driven by `config/sources.json`. YouTube
-ingestion stays as it was.
+Scrapes blog and paper sources defined in `config/sources.json`.
 
 Usage:
     from runner import Runner
@@ -14,11 +12,8 @@ Returned report shape:
     {
         "generated_at": "...",
         "hours": 24,
-        "blogs": {
-            "sources": {sid: {fetched, inserted, updated, error}},
-            "total_fetched": N
-        },
-        "youtube": {"count": N, "videos": [...]}
+        "blogs":  {"sources": {sid: {fetched, inserted, updated, error}}, "total_fetched": N},
+        "papers": {"sources": {sid: {fetched, inserted, updated, error}}, "total_fetched": N},
     }
 """
 from __future__ import annotations
@@ -31,14 +26,12 @@ from app.database.crud import (
     merge_hf_daily_papers,
     upsert_articles,
     upsert_papers,
-    upsert_youtube_videos,
 )
 from app.database.db import get_db
 from scrapers import (
     ArxivScraper,
     HfDailyScraper,
     RssBlogScraper,
-    YouTubeScraper,
 )
 
 
@@ -47,25 +40,12 @@ from scrapers import (
 # ---------------------------------------------------------------------------
 
 CONFIG_DIR    = Path(__file__).parent / "config"
-CHANNELS_FILE = CONFIG_DIR / "channels.json"
 SOURCES_FILE  = CONFIG_DIR / "sources.json"
 
 
 # ---------------------------------------------------------------------------
 # Config loaders
 # ---------------------------------------------------------------------------
-
-def load_channels(path: Path = CHANNELS_FILE) -> list[dict]:
-    """Load the YouTube channel configs.
-
-    Each entry is `{"handle": str, "topics": list[str]}`. The runner
-    propagates `topics` to each scraped video so the digest can route
-    it to the right topic section.
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("youtube_channels", [])
-
 
 def load_blog_sources(path: Path = SOURCES_FILE) -> list[dict]:
     """Load enabled blog source configs from sources.json."""
@@ -91,9 +71,8 @@ class Runner:
     unified report dict.
     """
 
-    def __init__(self, hours: int = 24, fetch_transcripts: bool = True) -> None:
-        self.hours             = hours
-        self.fetch_transcripts = fetch_transcripts
+    def __init__(self, hours: int = 24) -> None:
+        self.hours = hours
 
     # ------------------------------------------------------------------
     # Public
@@ -104,19 +83,16 @@ class Runner:
         print(f"  AI News Aggregator - last {self.hours}h")
         print(f"{'='*60}\n")
 
-        blog_data    = self._scrape_and_save_blogs()
-        paper_data   = self._scrape_and_save_papers()
-        youtube_data = self._scrape_youtube()
+        blog_data  = self._scrape_and_save_blogs()
+        paper_data = self._scrape_and_save_papers()
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "hours":        self.hours,
             "blogs":        blog_data,
             "papers":       paper_data,
-            "youtube":      youtube_data,
         }
 
-        self._save_youtube(report)
         self._print_summary(report)
         return report
 
@@ -126,7 +102,7 @@ class Runner:
 
     def _scrape_and_save_blogs(self) -> dict:
         sources = load_blog_sources()
-        print(f"[1/3] Scraping {len(sources)} blog source(s) ...")
+        print(f"[1/2] Scraping {len(sources)} blog source(s) ...")
 
         by_source: dict[str, dict] = {}
 
@@ -164,7 +140,7 @@ class Runner:
 
     def _scrape_and_save_papers(self) -> dict:
         sources = load_paper_sources()
-        print(f"[2/3] Scraping {len(sources)} paper source(s) ...")
+        print(f"[2/2] Scraping {len(sources)} paper source(s) ...")
 
         by_source: dict[str, dict] = {}
 
@@ -204,60 +180,6 @@ class Runner:
         return {"sources": by_source, "total_fetched": total}
 
     # ------------------------------------------------------------------
-    # YouTube (unchanged)
-    # ------------------------------------------------------------------
-
-    def _scrape_youtube(self) -> dict:
-        print("[3/3] Scraping YouTube channels ...")
-        channels = load_channels()
-        scraper  = YouTubeScraper()
-
-        all_videos: list[dict] = []
-
-        for cfg in channels:
-            handle = cfg["handle"]
-            topics = list(cfg.get("topics", []))
-            print(f"      -> Resolving {handle} ...", end=" ")
-            channel_id = scraper.get_channel_id(handle)
-
-            if channel_id is None:
-                print("SKIP (could not resolve)")
-                continue
-
-            videos = scraper.get_latest_videos(channel_id, hours=self.hours)
-            print(f"{len(videos)} video(s)")
-
-            for video in videos:
-                video["channel"] = handle
-                video["topics"]  = topics
-                if self.fetch_transcripts:
-                    transcript = scraper.get_transcript(video["video_id"])
-                    video["transcript"] = transcript or ""
-                else:
-                    video["transcript"] = ""
-
-            all_videos.extend(videos)
-
-        all_videos.sort(key=lambda v: v["published_at"], reverse=True)
-        print(f"      Total: {len(all_videos)} video(s).\n")
-        return {"count": len(all_videos), "videos": all_videos}
-
-    # ------------------------------------------------------------------
-    # YouTube DB save (Anthropic save now happens inside _scrape_and_save_blogs)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _save_youtube(report: dict) -> None:
-        videos = report["youtube"]["videos"]
-        with get_db() as db:
-            if videos:
-                saved = upsert_youtube_videos(db, videos)
-                print(f"[DB] Upserted {len(saved)} YouTube video(s).")
-            else:
-                print("[DB] No YouTube videos to save.")
-        print()
-
-    # ------------------------------------------------------------------
     # Pretty-print
     # ------------------------------------------------------------------
 
@@ -282,13 +204,5 @@ class Runner:
         _print_source_block("Blog sources", report["blogs"])
         print()
         _print_source_block("Paper sources", report["papers"])
-
-        # YouTube
-        videos = report["youtube"]["videos"]
-        print(f"\n  YouTube videos: {len(videos)}")
-        for v in videos:
-            has_transcript = "+" if v.get("transcript") else "-"
-            print(f"    [{has_transcript}] {v['published_at']}  {v['title']}")
-            print(f"          {v['url']}  ({v.get('channel', '?')})")
 
         print(f"\n{'='*60}\n")

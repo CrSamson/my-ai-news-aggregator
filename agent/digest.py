@@ -39,11 +39,10 @@ from dotenv import load_dotenv
 from app.database.crud import (
     get_recent_summarized_articles,
     get_recent_summarized_papers,
-    get_recent_summarized_youtube_videos,
     mark_digest_sent,
 )
 from app.database.db import get_db
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 
 
 # ---------------------------------------------------------------------------
@@ -135,13 +134,6 @@ def _article_title(article: Article) -> str:
     return article.title
 
 
-def _youtube_meta(video: YoutubeVideo) -> str:
-    parts = [video.published_at.strftime("%Y-%m-%d")]
-    if video.channel_handle:
-        parts.append(video.channel_handle)
-    return " · ".join(parts)
-
-
 def _paper_meta(paper: Paper) -> str:
     parts: list[str] = []
     if paper.published_at:
@@ -162,17 +154,11 @@ def _paper_authors(paper: Paper) -> str:
     return ", ".join(paper.authors[:3]) + " et al."
 
 
-def _youtube_thumbnail(video_id: str) -> str:
-    """`hqdefault.jpg` always exists for any video and is 480x360 — safe default."""
-    return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-
-
 # Inline-styled chip background per kind. Subtle, neutral palette so the
 # topic section heading remains the dominant visual cue.
 _KIND_BADGE_STYLES: dict[str, tuple[str, str, str]] = {
     "article": ("Article", "#eef2ff", "#3730a3"),  # indigo
     "paper":   ("Paper",   "#fef3c7", "#92400e"),  # amber
-    "video":   ("YouTube", "#fee2e2", "#991b1b"),  # red
 }
 
 
@@ -252,26 +238,16 @@ def _card_for(kind: str, item) -> str:
             cta="Read more →",
             kind="article",
         )
-    if kind == "paper":
-        return _card_html(
-            url=item.url,
-            title=item.title,
-            authors=_paper_authors(item) or None,
-            meta=_paper_meta(item),
-            summary=_summary_to_paragraph(item.summary),
-            thumbnail=None,
-            cta="Read on arXiv →",
-            kind="paper",
-        )
-    # video
+    # paper
     return _card_html(
-        url=str(item.url),
+        url=item.url,
         title=item.title,
-        meta=_youtube_meta(item),
+        authors=_paper_authors(item) or None,
+        meta=_paper_meta(item),
         summary=_summary_to_paragraph(item.summary),
-        thumbnail=_youtube_thumbnail(item.video_id),
-        cta="Watch on YouTube →",
-        kind="video",
+        thumbnail=None,
+        cta="Read on arXiv →",
+        kind="paper",
     )
 
 
@@ -282,7 +258,7 @@ def render_html(
 ) -> str:
     """Inline-styled HTML — no <style> blocks for max client compatibility.
     Renders one section per topic in DIGEST_TOPIC_ORDER, each card carrying
-    a kind badge (Article / Paper / YouTube)."""
+    a kind badge (Article / Paper)."""
 
     def section_heading(title: str, count: int) -> str:
         return (
@@ -349,7 +325,7 @@ def render_html(
 def _text_lines_for(kind: str, item) -> list[str]:
     """Render one (kind, item) tuple as a list of plain-text lines, with a
     [KIND] tag prefix on the title line."""
-    tag_map = {"article": "[ARTICLE]", "paper": "[PAPER]", "video": "[YOUTUBE]"}
+    tag_map = {"article": "[ARTICLE]", "paper": "[PAPER]"}
     tag = tag_map.get(kind, "")
 
     if kind == "article":
@@ -364,28 +340,20 @@ def _text_lines_for(kind: str, item) -> list[str]:
             f"-> {url}",
             "",
         ]
-    if kind == "paper":
-        title     = item.title
-        url       = item.url
-        authors   = _paper_authors(item)
-        meta      = _paper_meta(item)
-        paragraph = _summary_to_paragraph(item.summary)
-        out = [f"{tag} {title}".strip()]
-        if authors:
-            out.append(authors)
-        out.append(meta)
-        out.append(paragraph or "(no summary)")
-        out.append(f"-> {url}")
-        out.append("")
-        return out
-    # video
-    return [
-        f"{tag} {item.title}".strip(),
-        _youtube_meta(item),
-        _summary_to_paragraph(item.summary) or "(no summary)",
-        f"-> {str(item.url)}",
-        "",
-    ]
+    # paper
+    title     = item.title
+    url       = item.url
+    authors   = _paper_authors(item)
+    meta      = _paper_meta(item)
+    paragraph = _summary_to_paragraph(item.summary)
+    out = [f"{tag} {title}".strip()]
+    if authors:
+        out.append(authors)
+    out.append(meta)
+    out.append(paragraph or "(no summary)")
+    out.append(f"-> {url}")
+    out.append("")
+    return out
 
 
 def render_text(
@@ -426,15 +394,14 @@ def render_text(
 
 def build_digest(
     hours: int,
-) -> tuple[list[Article], list[Paper], list[YoutubeVideo]]:
+) -> tuple[list[Article], list[Paper]]:
     with get_db() as db:
         articles = get_recent_summarized_articles(db, hours=hours)
         papers   = get_recent_summarized_papers(db, hours=hours)
-        videos   = get_recent_summarized_youtube_videos(db, hours=hours)
         # Detach from session so callers can read attributes after the context exits.
-        for obj in (*articles, *papers, *videos):
+        for obj in (*articles, *papers):
             db.expunge(obj)
-    return articles, papers, videos
+    return articles, papers
 
 
 # Order of topic sections in the email. The first topic with a remaining
@@ -464,21 +431,18 @@ DIGEST_MAX_PER_SOURCE: int = 2
 def _diversity_key(kind: str, item) -> str | None:
     """Return a per-section diversity key, or None if the kind doesn't enforce one.
 
-    Articles dedupe by source. Videos dedupe by channel. Papers don't enforce
-    a cap because every paper is unique by arxiv_id - one publisher (arxiv,
-    hf_daily) can legitimately surface multiple distinct papers.
+    Articles dedupe by source. Papers don't enforce a cap because every paper
+    is unique by arxiv_id - one publisher (arxiv, hf_daily) can legitimately
+    surface multiple distinct papers.
     """
     if kind == "article":
         return f"a:{getattr(item, 'source', None)}"
-    if kind == "video":
-        return f"v:{getattr(item, 'channel_handle', None)}"
     return None  # papers
 
 
 def cap_by_topic(
     articles: list[Article],
     papers: list[Paper],
-    videos: list[YoutubeVideo],
     max_items: int,
 ) -> dict[str, list[tuple[str, object]]]:
     """
@@ -487,13 +451,13 @@ def cap_by_topic(
     each value a list of (kind, item) tuples sorted by published_at desc.
 
     Quota: max_items split as evenly as possible across DIGEST_TOPIC_ORDER.
-    For max_items=15 across 4 topics: 4/4/4/3 (first three topics get the +1).
+    For max_items=15 across 5 topics: 3/3/3/3/3.
 
     Multi-topic items: a row tagged ["ai", "technology"] is rendered in the
     first matching topic in DIGEST_TOPIC_ORDER and never duplicated. The
     `placed` set tracks (kind, id) pairs across topics.
 
-    Per-source diversity: within a single topic, no source/channel exceeds
+    Per-source diversity: within a single topic, no source exceeds
     DIGEST_MAX_PER_SOURCE items. Papers don't enforce diversity.
     """
     EARLIEST = datetime.min.replace(tzinfo=timezone.utc)
@@ -502,7 +466,6 @@ def cap_by_topic(
     stream: list[tuple[str, object, datetime]] = []
     stream += [("article", a, a.published_at or EARLIEST) for a in articles]
     stream += [("paper",   p, p.published_at or EARLIEST) for p in papers]
-    stream += [("video",   v, v.published_at or EARLIEST) for v in videos]
     stream.sort(key=lambda t: t[2], reverse=True)
 
     n_topics = len(DIGEST_TOPIC_ORDER)
@@ -538,21 +501,18 @@ def cap_by_topic(
 
 def flatten_by_topic(
     by_topic: dict[str, list[tuple[str, object]]],
-) -> tuple[list[Article], list[Paper], list[YoutubeVideo]]:
-    """Split a by_topic dict back into three per-kind lists. Used by the
-    post-send mark step which still operates per-table."""
-    articles: list[Article]      = []
-    papers:   list[Paper]        = []
-    videos:   list[YoutubeVideo] = []
+) -> tuple[list[Article], list[Paper]]:
+    """Split a by_topic dict back into per-kind lists. Used by the post-send
+    mark step which still operates per-table."""
+    articles: list[Article] = []
+    papers:   list[Paper]   = []
     for items in by_topic.values():
         for kind, item in items:
             if kind == "article":
                 articles.append(item)   # type: ignore[arg-type]
             elif kind == "paper":
                 papers.append(item)     # type: ignore[arg-type]
-            elif kind == "video":
-                videos.append(item)     # type: ignore[arg-type]
-    return articles, papers, videos
+    return articles, papers
 
 
 # ---------------------------------------------------------------------------
@@ -614,12 +574,12 @@ def main() -> None:
                              "matching topic only. Default: 15.")
     args = parser.parse_args()
 
-    articles, papers, videos = build_digest(hours=args.hours)
-    pre_total = len(articles) + len(papers) + len(videos)
-    print(f"[digest] {len(articles)} article(s), {len(papers)} paper(s), "
-          f"{len(videos)} video(s) in last {args.hours}h.")
+    articles, papers = build_digest(hours=args.hours)
+    pre_total = len(articles) + len(papers)
+    print(f"[digest] {len(articles)} article(s), {len(papers)} paper(s) "
+          f"in last {args.hours}h.")
 
-    by_topic = cap_by_topic(articles, papers, videos, max_items=args.max_items)
+    by_topic = cap_by_topic(articles, papers, max_items=args.max_items)
     total = sum(len(items) for items in by_topic.values())
     if total < pre_total:
         print(f"[digest] capped from {pre_total} to {total} items (--max-items={args.max_items}).")
@@ -627,11 +587,11 @@ def main() -> None:
     # Per-topic placement breakdown (mirrors the verification report format).
     for topic in DIGEST_TOPIC_ORDER:
         items = by_topic.get(topic, [])
-        kinds = {"article": 0, "paper": 0, "video": 0}
+        kinds = {"article": 0, "paper": 0}
         for k, _ in items:
             kinds[k] = kinds.get(k, 0) + 1
         print(f"  [{DIGEST_TOPIC_LABELS[topic]}] {len(items)} item(s) "
-              f"(articles={kinds['article']}, papers={kinds['paper']}, videos={kinds['video']})")
+              f"(articles={kinds['article']}, papers={kinds['paper']})")
 
     if total == 0:
         print("[digest] Nothing to send. Exiting.")
@@ -675,22 +635,20 @@ def main() -> None:
     # Mark every row that was actually included so the same content never
     # appears in a future digest. We mark AFTER the send so a SMTP failure
     # leaves the rows unsent and they get a second chance on the next run.
-    sent_articles, sent_papers, sent_videos = flatten_by_topic(by_topic)
-    _mark_sent(sent_articles, sent_papers, sent_videos)
+    sent_articles, sent_papers = flatten_by_topic(by_topic)
+    _mark_sent(sent_articles, sent_papers)
 
 
 def _mark_sent(
     articles: list[Article],
     papers:   list[Paper],
-    videos:   list[YoutubeVideo],
 ) -> None:
     """Stamp digest_sent_at = NOW() on every row that just shipped."""
     try:
         with get_db() as db:
-            n_a = mark_digest_sent(db, Article,      [a.id for a in articles])
-            n_p = mark_digest_sent(db, Paper,        [p.id for p in papers])
-            n_v = mark_digest_sent(db, YoutubeVideo, [v.id for v in videos])
-        print(f"[digest] Marked {n_a} article(s), {n_p} paper(s), {n_v} video(s) as sent.")
+            n_a = mark_digest_sent(db, Article, [a.id for a in articles])
+            n_p = mark_digest_sent(db, Paper,   [p.id for p in papers])
+        print(f"[digest] Marked {n_a} article(s), {n_p} paper(s) as sent.")
     except Exception as e:  # noqa: BLE001 - mark failure is recoverable; double-email better than silent loss
         print(f"[digest] WARNING: send succeeded but mark_digest_sent failed: {e}")
 

@@ -1,9 +1,8 @@
 """
 tools/phase6_check.py - end-to-end backtest (multi-source plan, Phase 6).
 
-Drives Runner programmatically with hours=72, fetch_transcripts=False
-(YouTube transcripts off so the run finishes fast). Captures the report
-and asserts:
+Drives Runner programmatically with hours=72. Captures the report and
+asserts:
 
   - Every enabled source returns a number (no unhandled exceptions).
   - >= 70% of enabled blog/paper sources fetched >= 1 item.
@@ -108,10 +107,10 @@ def run_phase_6(*, truncate: bool) -> int:
     if truncate:
         truncate_articles_and_papers()
 
-    runner = Runner(hours=PHASE_6_HOURS, fetch_transcripts=False)
+    runner = Runner(hours=PHASE_6_HOURS)
 
     print("=" * 60)
-    print(f"  RUN 1 - hours={PHASE_6_HOURS}, fetch_transcripts=False")
+    print(f"  RUN 1 - hours={PHASE_6_HOURS}")
     print("=" * 60)
     report_1 = runner.run()
 
@@ -155,11 +154,6 @@ def run_phase_6(*, truncate: bool) -> int:
     ok, p = summarize_block("papers", report_2["papers"], expect_zero_inserts=True)
     problems += p
 
-    # YouTube regression note (not asserted - depends on user's channel activity).
-    yt_videos = report_1["youtube"]["videos"]
-    print(f"\nYouTube: {len(yt_videos)} video(s) returned in run 1 "
-          f"(regression check: should still work like before; not auto-asserted).")
-
     print("\n" + "=" * 60)
     if problems:
         print("RESULT: PROBLEMS FOUND")
@@ -180,8 +174,7 @@ def main() -> int:
     parser.add_argument(
         "--truncate", action="store_true",
         help="WIPE the articles and papers tables before running. "
-             "Use to get clean before/after counts. "
-             "Does NOT touch youtube_videos.",
+             "Use to get clean before/after counts.",
     )
     args = parser.parse_args()
     return run_phase_6(truncate=args.truncate)

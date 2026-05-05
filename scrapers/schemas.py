@@ -8,7 +8,7 @@ Two intentional design notes:
   - `summary` is always None at scrape time. It's the LLM-output column
     in the DB; the scraper never writes it. The RSS feed's <description>
     goes into raw_metadata instead.
-  - `frozen=True` mirrors the existing VideoMetadata convention in this repo.
+  - `frozen=True` makes scraper outputs immutable once produced.
 """
 from __future__ import annotations
 

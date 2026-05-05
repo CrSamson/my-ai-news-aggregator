@@ -1,14 +1,13 @@
 """
 agent/summarizer.py — Per-row LLM summarizer (OpenAI).
 
-Reads rows whose `summary` column is NULL/empty from `articles`,
-`papers`, and `youtube_videos`, asks an OpenAI model to summarize each
-one, and writes the result back.
+Reads rows whose `summary` column is NULL/empty from `articles` and
+`papers`, asks an OpenAI model to summarize each one, and writes the
+result back.
 
 The system prompt varies by kind:
-  - articles / video transcripts -> a busy AI-practitioner blurb
-  - papers                       -> a plain-English explainer for a
-                                    general audience
+  - articles -> a busy AI-practitioner blurb
+  - papers   -> a plain-English explainer for a general audience
 
 Run directly to fill in summaries for everything currently unsummarized:
 
@@ -16,7 +15,6 @@ Run directly to fill in summaries for everything currently unsummarized:
     python -m agent.summarizer --limit 5      # cap how many of each type
     python -m agent.summarizer --articles     # only blog/news articles
     python -m agent.summarizer --papers       # only research papers
-    python -m agent.summarizer --youtube      # only YouTube videos
 """
 
 from __future__ import annotations
@@ -33,16 +31,13 @@ from openai import OpenAI, OpenAIError
 from app.database.crud import (
     get_all_articles,
     get_all_papers,
-    get_all_youtube_videos,
     get_unsummarized_articles,
     get_unsummarized_papers,
-    get_unsummarized_youtube_videos,
     set_article_summary,
     set_paper_summary,
-    set_youtube_summary,
 )
 from app.database.db import get_db
-from app.database.models import Article, Paper, YoutubeVideo
+from app.database.models import Article, Paper
 
 
 # Fixed topic taxonomy. The LLM is required to return values from this set.
@@ -135,9 +130,8 @@ _TOPIC_TAXONOMY_BLOCK = (
 
 
 _PROMPTS: dict[str, str] = {
-    "article":          _ARTICLE_PROMPT          + _TOPIC_TAXONOMY_BLOCK,
-    "video transcript": _ARTICLE_PROMPT          + _TOPIC_TAXONOMY_BLOCK,
-    "paper":            _PAPER_PROMPT            + _TOPIC_TAXONOMY_BLOCK,
+    "article": _ARTICLE_PROMPT + _TOPIC_TAXONOMY_BLOCK,
+    "paper":   _PAPER_PROMPT   + _TOPIC_TAXONOMY_BLOCK,
 }
 
 
@@ -192,16 +186,6 @@ class Summarizer:
             url=paper.url,
             body=body,
             fallback_topics=list(paper.topics or []),
-        )
-
-    def summarize_youtube_video(self, video: YoutubeVideo) -> tuple[str, list[str]]:
-        body = video.transcript or video.description or ""
-        return self._summarize(
-            kind="video transcript",
-            title=video.title,
-            url=str(video.url),
-            body=body,
-            fallback_topics=list(video.topics or []),
         )
 
     # ------------------------------------------------------------------
@@ -319,7 +303,7 @@ def _validate_topics(raw: object, *, fallback: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _run(limit: int | None, do_articles: bool, do_papers: bool,
-         do_youtube: bool, force: bool) -> None:
+         force: bool) -> None:
     summarizer = Summarizer()
     label = "re-summarize" if force else "summarize"
 
@@ -363,25 +347,6 @@ def _run(limit: int | None, do_articles: bool, do_papers: bool,
                     print(f"      ! failed: {e}")
                     db.rollback()
 
-        if do_youtube:
-            videos = (
-                get_all_youtube_videos(db) if force
-                else get_unsummarized_youtube_videos(db)
-            )
-            if limit is not None:
-                videos = videos[:limit]
-            print(f"[youtube]  {len(videos)} video(s) to {label}.")
-            for i, video in enumerate(videos, start=1):
-                print(f"  ({i}/{len(videos)}) {video.title[:80]}")
-                try:
-                    summary, topics = summarizer.summarize_youtube_video(video)
-                    set_youtube_summary(db, video.id, summary, topics=topics)
-                    db.commit()
-                    print(f"      topics={topics}")
-                except OpenAIError as e:
-                    print(f"      ! failed: {e}")
-                    db.rollback()
-
 
 def main() -> None:
     # Windows consoles default to cp1252 and choke on '→', accented chars,
@@ -402,18 +367,15 @@ def main() -> None:
                         help="Only blog/news articles.")
     parser.add_argument("--papers", action="store_true",
                         help="Only research papers.")
-    parser.add_argument("--youtube", action="store_true",
-                        help="Only YouTube videos.")
     parser.add_argument("--force", action="store_true",
                         help="Re-summarize rows that already have a summary "
                              "(burns API credits — pair with --limit to test).")
     args = parser.parse_args()
 
-    # If no flag is passed, run all three.
-    any_flag    = args.articles or args.papers or args.youtube
+    # If no flag is passed, run both kinds.
+    any_flag    = args.articles or args.papers
     do_articles = args.articles or not any_flag
     do_papers   = args.papers   or not any_flag
-    do_youtube  = args.youtube  or not any_flag
 
     if "OPENAI_API_KEY" not in os.environ:
         raise SystemExit(
@@ -421,7 +383,7 @@ def main() -> None:
         )
 
     _run(limit=args.limit, do_articles=do_articles, do_papers=do_papers,
-         do_youtube=do_youtube, force=args.force)
+         force=args.force)
 
 
 if __name__ == "__main__":

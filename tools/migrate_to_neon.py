@@ -14,12 +14,12 @@ Steps:
     1. Probe both databases. Bail out if either is unreachable.
     2. Create the schema on Neon (Base.metadata.create_all + additive ALTERs).
        Idempotent - safe to re-run.
-    3. Per table (articles, papers, youtube_videos):
+    3. Per table (articles, papers):
          - If Neon already has rows in that table, skip (treat the migration
            as already done; deliberate guard against accidental dup-inserts).
          - Otherwise, read every row from local and INSERT into Neon, letting
-           Neon assign fresh `id`s. The conflict keys (url / arxiv_id /
-           video_id) carry through and stay unique on Neon.
+           Neon assign fresh `id`s. The conflict keys (url / arxiv_id) carry
+           through and stay unique on Neon.
     4. Print a side-by-side row-count table on both ends.
 
 Run:
@@ -40,15 +40,14 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import sessionmaker
 
-from app.database.models import Article, Base, Paper, YoutubeVideo
+from app.database.models import Article, Base, Paper
 
 
 # Run the same additive ALTERs that app/database/create_tables.py applies, so
 # Neon's schema matches our current production columns even if Base.metadata
 # was older when the table was first created.
 ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
-    ("youtube_videos", "summary", "TEXT NOT NULL DEFAULT ''"),
-    ("papers",         "summary", "TEXT"),
+    ("papers", "summary", "TEXT"),
 ]
 
 
@@ -143,14 +142,14 @@ def main() -> int:
     _create_schema_on_neon(neon_engine)
 
     print("\n=== copying rows ===")
-    for model in (Article, Paper, YoutubeVideo):
+    for model in (Article, Paper):
         _migrate_table(local_engine, neon_engine, model)
 
     print("\n=== final row counts ===")
     print(f"  {'table':<20} {'local':>8} {'neon':>8}  status")
     print(f"  {'-'*20} {'-'*8} {'-'*8}  ------")
     overall_ok = True
-    for model in (Article, Paper, YoutubeVideo):
+    for model in (Article, Paper):
         with local_engine.connect() as lc, neon_engine.connect() as nc:
             lcount = lc.execute(select(func.count()).select_from(model)).scalar() or 0
             ncount = nc.execute(select(func.count()).select_from(model)).scalar() or 0

@@ -1,7 +1,6 @@
 # Scrapers
 feedparser==6.0.12
 requests==2.32.5
-youtube-transcript-api==1.2.4
 # Article body extraction (URL -> markdown). Lightweight (~5 MB of deps)
 # replacement for Docling. See tools/compare_extractors.py for the A/B that
 # justified the swap. Per-source fetch_content config decides where to enable.

@@ -21,25 +21,28 @@ from app.database.models import (  # noqa: F401
     Base,
     Article,
     Paper,
-    YoutubeVideo,
 )
 
 
 # (table, column, ddl-fragment) — kept here so re-running this script is enough
 # to bring an existing DB in line with the current models.
 _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
-    ("youtube_videos", "summary",        "TEXT NOT NULL DEFAULT ''"),
     ("papers",         "summary",        "TEXT"),  # nullable, matches Article.summary
     # Digest send-state. NULL = not yet emailed; set to NOW() once a digest
     # containing the row is successfully sent. See agent/digest.py.
     ("articles",       "digest_sent_at", "TIMESTAMPTZ"),
     ("papers",         "digest_sent_at", "TIMESTAMPTZ"),
-    ("youtube_videos", "digest_sent_at", "TIMESTAMPTZ"),
-    # Topic tags inherited from source/channel config in sources.json + channels.json.
+    # Topic tags inherited from source config in sources.json.
     # Empty array on existing rows until tools/backfill_topics.py runs.
     ("articles",       "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
     ("papers",         "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
-    ("youtube_videos", "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
+]
+
+# Tables removed from the schema. DROPped on every run so a stale Neon DB
+# cleans itself up. Safe to keep here forever — DROP IF EXISTS is a no-op
+# once the table is gone. Carried for one or two migrations, then prunable.
+_DROPPED_TABLES: list[str] = [
+    "youtube_videos",
 ]
 
 
@@ -71,6 +74,11 @@ def main() -> None:
                 f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}'
             ))
             print(f"  [COLUMN OK]  {table}.{column}")
+
+        for table in _DROPPED_TABLES:
+            if table in after:
+                conn.execute(text(f'DROP TABLE IF EXISTS {table}'))
+                print(f"  [DROPPED]    {table}")
 
     print(f"\nDone. {len(created)} table(s) created, {len(preexisting)} already existed.")
 
