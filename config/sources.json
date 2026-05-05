@@ -111,7 +111,11 @@
       "fetch_content": false,
       "enabled": true,
       "fragile": false,
-      "topics": ["technology"]
+      "topics": ["technology"],
+      "_blocklist_note": "Wired's main feed includes templated coupon/promo listicles (e.g. 'Surfshark Coupon', 'Sony Promo Code', 'VistaPrint Coupon Code') that all share a near-identical title format and false-merge into a single 21-article cluster on MiniLM embeddings. Filtered at scrape time so they never reach the embedding step.",
+      "url_blocklist": [
+        "(coupon|promo-code)"
+      ]
     },
     {
       "id": "the_verge",
@@ -160,7 +164,8 @@
       "type": "rss",
       "feed_url": "https://www.benzinga.com/feed",
       "fetch_content": false,
-      "enabled": true,
+      "enabled": false,
+      "_disabled_reason": "Feed is 100% templated 'X Price Prediction: 2025, 2026, 2030' crypto pages — not news. False-merges everything into one cluster on MiniLM. Disabled 2026-05-05 during Phase 4 backtest.",
       "fragile": false,
       "topics": ["business"]
     },
@@ -170,7 +175,8 @@
       "type": "rss",
       "feed_url": "https://www.insidermonkey.com/blog/feed/",
       "fetch_content": false,
-      "enabled": true,
+      "enabled": false,
+      "_disabled_reason": "Feed is 100% raw Q1 earnings call transcripts — not news. False-merges via title template 'X Q1 2026 Earnings Call Transcript'. Disabled 2026-05-05 during Phase 4 backtest.",
       "fragile": false,
       "topics": ["business"]
     },
@@ -281,16 +287,6 @@
       "name": "Channel News Asia",
       "type": "rss",
       "feed_url": "https://www.channelnewsasia.com/rssfeeds/8395986",
-      "fetch_content": true,
-      "enabled": true,
-      "fragile": false,
-      "topics": ["general"]
-    },
-    {
-      "id": "le_monde",
-      "name": "Le Monde - Une",
-      "type": "rss",
-      "feed_url": "https://www.lemonde.fr/rss/une.xml",
       "fetch_content": true,
       "enabled": true,
       "fragile": false,

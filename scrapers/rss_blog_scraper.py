@@ -20,6 +20,7 @@ fixture file without mocking requests.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -49,6 +50,15 @@ class RssBlogScraper(BaseScraper):
         self.user_agent    = source_config.get("user_agent", DEFAULT_UA)
         # Topic tags inherited by every article this scraper produces.
         self.topics        = list(source_config.get("topics", []))
+        # Per-source URL blocklist: any entry whose URL matches one of these
+        # regex patterns is dropped at scrape time. Used to exclude
+        # templated listicles (e.g. wired's coupon pages) that would
+        # otherwise pollute the embedding-clustering step. Patterns are
+        # python regex, matched with re.search (substring-friendly).
+        raw_patterns = source_config.get("url_blocklist") or []
+        self._url_blocklist: list[re.Pattern[str]] = [
+            re.compile(p, re.IGNORECASE) for p in raw_patterns
+        ]
 
     # ------------------------------------------------------------------
     # Public
@@ -117,6 +127,12 @@ class RssBlogScraper(BaseScraper):
         title = (entry.get("title") or "").strip()
         if not url or not title:
             return None  # malformed entry, skip silently
+
+        # URL blocklist (e.g. wired coupon pages): drop entries that match
+        # any configured regex.
+        for pat in self._url_blocklist:
+            if pat.search(url):
+                return None
 
         published = self._parse_date(entry)
         if published is not None and published < cutoff:
