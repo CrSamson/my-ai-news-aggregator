@@ -20,7 +20,15 @@ from app.database.db import engine
 from app.database.models import (  # noqa: F401
     Base,
     Article,
+    EMBEDDING_DIM,
 )
+
+
+# Postgres extensions required by the schema. Enabled before create_all so
+# the Vector(384) column type resolves on a fresh DB.
+_REQUIRED_EXTENSIONS: list[str] = [
+    "vector",   # pgvector — backs articles.embedding
+]
 
 
 # (table, column, ddl-fragment) — kept here so re-running this script is enough
@@ -32,7 +40,24 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     # Topic tags inherited from source config in sources.json.
     # Empty array on existing rows until tools/backfill_topics.py runs.
     ("articles", "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
+    # Per-article sentence-transformers embedding. NULL until agent/embedder
+    # runs.
+    ("articles", "embedding",      f"VECTOR({EMBEDDING_DIM})"),
 ]
+
+
+# Indices that aren't expressed in the ORM model. Created with IF NOT EXISTS
+# so re-runs are idempotent.
+_EXTRA_INDICES: list[tuple[str, str]] = [
+    # HNSW index for cosine-similarity nearest-neighbour search on the
+    # article embedding. Phase 4's clusterer queries this.
+    (
+        "ix_articles_embedding_hnsw",
+        "CREATE INDEX IF NOT EXISTS ix_articles_embedding_hnsw "
+        "ON articles USING hnsw (embedding vector_cosine_ops)",
+    ),
+]
+
 
 # Tables removed from the schema. DROPped on every run so a stale Neon DB
 # cleans itself up. Safe to keep here forever — DROP IF EXISTS is a no-op
@@ -45,6 +70,13 @@ _DROPPED_TABLES: list[str] = [
 
 def main() -> None:
     print(f"Connecting to: {engine.url}\n")
+
+    # Step 1: enable required extensions BEFORE create_all so Vector(N)
+    # column types resolve on a fresh database.
+    with engine.begin() as conn:
+        for ext in _REQUIRED_EXTENSIONS:
+            conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS {ext}'))
+            print(f"  [EXT OK]     {ext}")
 
     inspector   = inspect(engine)
     before      = set(inspector.get_table_names())
@@ -71,6 +103,10 @@ def main() -> None:
                 f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}'
             ))
             print(f"  [COLUMN OK]  {table}.{column}")
+
+        for index_name, ddl in _EXTRA_INDICES:
+            conn.execute(text(ddl))
+            print(f"  [INDEX OK]   {index_name}")
 
         for table in _DROPPED_TABLES:
             if table in after:

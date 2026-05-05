@@ -148,6 +148,33 @@ def get_recent_summarized_articles(db: Session, hours: int) -> list[Article]:
 
 
 # ===================================================================
+# Embeddings (Phase 3)
+# ===================================================================
+
+def get_unembedded_articles(db: Session, limit: Optional[int] = None) -> list[Article]:
+    """Return Articles whose `embedding` column is NULL, newest first."""
+    stmt = (
+        select(Article)
+        .where(Article.embedding.is_(None))
+        .order_by(Article.published_at.desc().nullslast())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def set_article_embedding(db: Session, article_id: int, embedding) -> None:
+    """Persist the embedding vector for one Article. `embedding` is a 1D
+    numpy array or list of floats of length EMBEDDING_DIM (384)."""
+    article = db.get(Article, article_id)
+    if article is None:
+        raise ValueError(f"Article id={article_id} not found")
+    # pgvector accepts numpy arrays and python lists; convert to list to
+    # avoid surprising the SQLAlchemy adapter on some numpy dtypes.
+    article.embedding = list(embedding)
+
+
+# ===================================================================
 # Digest send-state
 # ===================================================================
 

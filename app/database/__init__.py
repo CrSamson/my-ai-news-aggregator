@@ -11,6 +11,8 @@ from .crud import (
     get_unsummarized_articles,
     set_article_summary,
     get_recent_summarized_articles,
+    get_unembedded_articles,
+    set_article_embedding,
     mark_digest_sent,
 )
 
@@ -25,5 +27,7 @@ __all__ = [
     "get_unsummarized_articles",
     "set_article_summary",
     "get_recent_summarized_articles",
+    "get_unembedded_articles",
+    "set_article_embedding",
     "mark_digest_sent",
 ]
