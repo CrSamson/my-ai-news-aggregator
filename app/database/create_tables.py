@@ -25,9 +25,24 @@ from app.database.models import (  # noqa: F401
 
 
 # Postgres extensions required by the schema. Enabled before create_all so
-# the Vector(384) column type resolves on a fresh DB.
+# the Vector(N) column type resolves on a fresh DB.
 _REQUIRED_EXTENSIONS: list[str] = [
     "vector",   # pgvector — backs articles.embedding
+]
+
+
+# Columns whose type changed and need to be dropped before _ADDITIVE_COLUMNS
+# can re-add them with the new type. Each entry: (table, column, old_type)
+# — the column is dropped only if its current type exactly matches old_type.
+# Carried for one or two migrations after a type change, then prunable.
+#
+# Indices on the column are also dropped here; the relevant entry of
+# _EXTRA_INDICES will rebuild them after the column is re-added.
+_MIGRATED_COLUMNS: list[tuple[str, str, str, list[str]]] = [
+    # MiniLM -> OpenAI text-embedding-3-small swap (2026-05-05).
+    # Drops 384-dim embedding column + HNSW index so additive ALTER
+    # below re-adds the column at vector(1536).
+    ("articles", "embedding", "vector(384)", ["ix_articles_embedding_hnsw"]),
 ]
 
 
@@ -40,8 +55,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     # Topic tags inherited from source config in sources.json.
     # Empty array on existing rows until tools/backfill_topics.py runs.
     ("articles", "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
-    # Per-article sentence-transformers embedding. NULL until agent/embedder
-    # runs.
+    # Per-article OpenAI embedding. NULL until agent/embedder runs.
     ("articles", "embedding",      f"VECTOR({EMBEDDING_DIM})"),
 ]
 
@@ -68,6 +82,26 @@ _DROPPED_TABLES: list[str] = [
 ]
 
 
+def _current_column_type(conn, table: str, column: str) -> str | None:
+    """Return the current Postgres type string for `table.column`, or None
+    if the column doesn't exist. Uses information_schema so it works for
+    both standard types and pgvector's vector(N) type."""
+    row = conn.execute(text(
+        """
+        SELECT format_type(a.atttypid, a.atttypmod) AS data_type
+          FROM pg_attribute a
+          JOIN pg_class c ON a.attrelid = c.oid
+          JOIN pg_namespace n ON c.relnamespace = n.oid
+         WHERE c.relname = :table
+           AND a.attname = :column
+           AND a.attnum > 0
+           AND NOT a.attisdropped
+           AND n.nspname = ANY (current_schemas(false))
+        """
+    ), {"table": table, "column": column}).first()
+    return row[0] if row else None
+
+
 def main() -> None:
     print(f"Connecting to: {engine.url}\n")
 
@@ -77,6 +111,22 @@ def main() -> None:
         for ext in _REQUIRED_EXTENSIONS:
             conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS {ext}'))
             print(f"  [EXT OK]     {ext}")
+
+    # Step 2: handle column type migrations BEFORE create_all so the
+    # subsequent additive ALTER picks up the new type. Drop indices first
+    # because the column DROP would fail otherwise.
+    with engine.begin() as conn:
+        for table, column, old_type, drop_indices in _MIGRATED_COLUMNS:
+            current = _current_column_type(conn, table, column)
+            if current is None:
+                continue                  # column doesn't exist; nothing to migrate
+            if current.lower() != old_type.lower():
+                continue                  # already migrated or unrelated type
+            for idx in drop_indices:
+                conn.execute(text(f'DROP INDEX IF EXISTS {idx}'))
+                print(f"  [DROPPED IX] {idx}")
+            conn.execute(text(f'ALTER TABLE {table} DROP COLUMN {column}'))
+            print(f"  [DROPPED COL] {table}.{column} (was {old_type})")
 
     inspector   = inspect(engine)
     before      = set(inspector.get_table_names())

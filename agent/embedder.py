@@ -3,19 +3,28 @@ agent/embedder.py — Pluggable article-embedding layer.
 
 Defines a thin `Embedder` protocol with two concrete implementations:
 
-    MiniLMEmbedder    default. sentence-transformers/all-MiniLM-L6-v2,
-                      L2-normalised, 384-dim. Local, free per call,
-                      ~80MB model on first download.
-    OpenAIEmbedder    stub. Raises NotImplementedError until activated;
-                      the swap point is here so callers don't change.
+    OpenAIEmbedder    default. text-embedding-3-small, 1536-dim,
+                      L2-normalised post-hoc. Requires OPENAI_API_KEY
+                      (already wired up for summarisation). Costs
+                      ~$0.0006/day at production volume.
+    MiniLMEmbedder    fallback. sentence-transformers/all-MiniLM-L6-v2,
+                      384-dim, L2-normalised. Local, free per call.
+                      Requires sentence-transformers + torch in the
+                      environment (not in default requirements.txt).
 
-Pick via the BREVIO_EMBEDDER env var (default "minilm"):
+The embedder swap landed in 2026-05-05 after a backtest on 569 articles
+showed OpenAI catches more cross-source stories (Apple Mac mini, Mythos
+cluster, larger Musk v. Altman) and correctly decomposes the topic blobs
+that MiniLM merged (AWS GenAI, OpenAI weekly news, AI stocks). See
+experimentation/openai_embedding_compare.py for the full comparison.
 
-    BREVIO_EMBEDDER=minilm   # default
-    BREVIO_EMBEDDER=openai   # not implemented yet
+Pick via the BREVIO_EMBEDDER env var (default "openai"):
+
+    BREVIO_EMBEDDER=openai   # default
+    BREVIO_EMBEDDER=minilm   # requires `pip install sentence-transformers`
 
 Inputs are pre-formatted strings — `article_text(article)` is the helper
-that produces them from an Article row, mirroring notebook cell 6:
+that produces them from an Article row:
 
     title + " " + (content_md or raw_metadata.summary or "")[:500]
 
@@ -114,16 +123,54 @@ class MiniLMEmbedder:
 
 
 class OpenAIEmbedder:
-    """Stub for OpenAI text-embedding-3-small (1536-dim). Not implemented
-    yet — wired in advance so future callers don't have to change shape."""
+    """OpenAI text-embedding-3-small (1536-dim, L2-normalised post-hoc).
 
-    dim: int = 1536  # text-embedding-3-small native dim
+    Reads OPENAI_API_KEY from the environment (already loaded by callers
+    that import dotenv). Batches inputs in groups of 100; OpenAI accepts
+    up to 2048 inputs per call but smaller batches keep memory predictable
+    and surface failures earlier.
+
+    Note on output dim: 1536 is the native dim for text-embedding-3-small.
+    The endpoint also supports a `dimensions` parameter for Matryoshka
+    truncation if a smaller column is preferable; we don't use it here so
+    callers get the full quality of the model. Phase 4's pgvector column
+    must match whatever dim is in use; currently 384 (MiniLM). Switching
+    to this embedder requires altering the column type to vector(1536)
+    and rebuilding the HNSW index.
+    """
+
+    dim: int = 1536
+    MODEL_NAME: str = "text-embedding-3-small"
+    BATCH_SIZE: int = 100
+
+    def __init__(self) -> None:
+        # Lazy-imported so importing this module doesn't require openai
+        # if the user is on the MiniLM path.
+        from openai import OpenAI
+        self._client = OpenAI()
 
     def embed(self, texts: list[str]) -> np.ndarray:
-        raise NotImplementedError(
-            "OpenAIEmbedder is a stub. Set BREVIO_EMBEDDER=minilm or "
-            "implement this when you're ready to swap."
-        )
+        if not texts:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        all_vecs: list[list[float]] = []
+        for start in range(0, len(texts), self.BATCH_SIZE):
+            chunk = texts[start:start + self.BATCH_SIZE]
+            # OpenAI rejects empty strings; replace with a single space so
+            # the call doesn't fail on the rare title-only article with
+            # no body.
+            chunk = [t if t.strip() else " " for t in chunk]
+            resp = self._client.embeddings.create(
+                model=self.MODEL_NAME,
+                input=chunk,
+            )
+            # Response order matches input order per the API contract.
+            all_vecs.extend(item.embedding for item in resp.data)
+        arr = np.asarray(all_vecs, dtype=np.float32)
+        # Post-hoc L2-normalise so cosine == inner product for the
+        # downstream clusterer.
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return arr / norms
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +178,12 @@ class OpenAIEmbedder:
 # ---------------------------------------------------------------------------
 
 def get_default_embedder() -> Embedder:
-    """Return the embedder named by BREVIO_EMBEDDER (default: minilm)."""
-    name = os.environ.get("BREVIO_EMBEDDER", "minilm").strip().lower()
-    if name == "minilm":
-        return MiniLMEmbedder()
+    """Return the embedder named by BREVIO_EMBEDDER (default: openai)."""
+    name = os.environ.get("BREVIO_EMBEDDER", "openai").strip().lower()
     if name == "openai":
         return OpenAIEmbedder()
+    if name == "minilm":
+        return MiniLMEmbedder()
     raise ValueError(
-        f"Unknown BREVIO_EMBEDDER={name!r}. Expected one of: minilm, openai."
+        f"Unknown BREVIO_EMBEDDER={name!r}. Expected one of: openai, minilm."
     )

@@ -22,10 +22,11 @@ from pgvector.sqlalchemy import Vector
 Base = declarative_base()
 
 
-# Embedding dimensionality. Matches sentence-transformers/all-MiniLM-L6-v2.
-# If you swap to a different model with a different dim, change the column
-# type AND drop/recreate the HNSW index in app/database/create_tables.py.
-EMBEDDING_DIM: int = 384
+# Embedding dimensionality. Matches OpenAI text-embedding-3-small.
+# If you swap to a different model with a different dim, change this
+# constant AND add a migration entry to create_tables._MIGRATED_COLUMNS
+# so existing rows get re-embedded.
+EMBEDDING_DIM: int = 1536
 
 
 class Article(Base):
@@ -62,7 +63,7 @@ class Article(Base):
     topics          = Column(ARRAY(String), nullable=False,
                              server_default=text("ARRAY[]::varchar[]"))
 
-    # 384-dim sentence-transformers embedding of (title + content[:500]).
+    # 1536-dim OpenAI text-embedding-3-small of (title + content[:500]).
     # NULL until agent/embedder.py runs. L2-normalised so cosine similarity
     # equals the inner product. Indexed with HNSW + vector_cosine_ops for
     # nearest-neighbour story-clustering lookups (Phase 4).

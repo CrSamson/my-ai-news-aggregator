@@ -32,3 +32,7 @@ Thumbs.db
 
 # Phase 3a A/B output - evidence files, not source
 tools/extractor_comparison/
+
+# Cached embeddings produced by experimentation/openai_embedding_compare.py
+# (re-derivable, ~7MB per snapshot)
+experimentation/*.npz
