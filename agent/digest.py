@@ -1,9 +1,9 @@
 """
 agent/digest.py — Build and email the AI News digest.
 
-Pulls rows summarized within the last N hours, renders an HTML + plain-text
-email, and sends it via SMTP. Designed to run after `python -m agent.summarizer`
-has populated the `summary` columns.
+Pulls articles summarized within the last N hours, renders an HTML +
+plain-text email, and sends it via SMTP. Designed to run after
+`python -m agent.summarizer` has populated the `summary` columns.
 
 Run directly:
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import html
 import os
+import re
 import smtplib
 import ssl
 import sys
@@ -38,21 +39,19 @@ from dotenv import load_dotenv
 
 from app.database.crud import (
     get_recent_summarized_articles,
-    get_recent_summarized_papers,
     mark_digest_sent,
 )
 from app.database.db import get_db
-from app.database.models import Article, Paper
+from app.database.models import Article
 
 
 # ---------------------------------------------------------------------------
-# Anthropic title cleanup (was scrapers/anthropic_scrapper.clean_anthropic_title)
+# Anthropic title cleanup
 # ---------------------------------------------------------------------------
 # The Olshansk RSS mirror prepends each Anthropic title with a date and
 # category, no separator (e.g. "Apr 29, 2026ScienceEvaluating ..."). This
 # strips both. Applied via _article_title() only to rows whose source
 # starts with 'anthropic_'; other sources have clean titles already.
-import re
 
 _ANTHROPIC_DATE_PREFIX_RE = re.compile(
     r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
@@ -134,131 +133,40 @@ def _article_title(article: Article) -> str:
     return article.title
 
 
-def _paper_meta(paper: Paper) -> str:
-    parts: list[str] = []
-    if paper.published_at:
-        parts.append(paper.published_at.strftime("%Y-%m-%d"))
-    if paper.categories:
-        parts.append(", ".join(paper.categories[:3]))
-    if paper.hf_upvotes is not None and paper.hf_upvotes > 0:
-        parts.append(f"↑ {paper.hf_upvotes}")
-    return " · ".join(parts)
-
-
-def _paper_authors(paper: Paper) -> str:
-    """First 3 authors + 'et al.' if more. Empty string if no authors."""
-    if not paper.authors:
-        return ""
-    if len(paper.authors) <= 3:
-        return ", ".join(paper.authors)
-    return ", ".join(paper.authors[:3]) + " et al."
-
-
-# Inline-styled chip background per kind. Subtle, neutral palette so the
-# topic section heading remains the dominant visual cue.
-_KIND_BADGE_STYLES: dict[str, tuple[str, str, str]] = {
-    "article": ("Article", "#eef2ff", "#3730a3"),  # indigo
-    "paper":   ("Paper",   "#fef3c7", "#92400e"),  # amber
-}
-
-
-def _kind_badge_html(kind: str) -> str:
-    spec = _KIND_BADGE_STYLES.get(kind)
-    if not spec:
-        return ""
-    label, bg, fg = spec
-    return (
-        f'<span style="display:inline-block;font-size:11px;font-weight:700;'
-        f'text-transform:uppercase;letter-spacing:0.06em;'
-        f'padding:2px 8px;border-radius:999px;'
-        f'background:{bg};color:{fg};margin:0 8px 0 0;">{label}</span>'
-    )
-
-
-def _card_html(*, url: str, title: str, meta: str, summary: str,
-               thumbnail: str | None, cta: str,
-               authors: str | None = None,
-               kind: str | None = None) -> str:
-    """One article/paper/video card. No leading whitespace inside <a> tags —
-    Gmail preserves it as a leading space before the link text."""
-    safe_url   = html.escape(url)
-    safe_title = html.escape(title)
-    safe_meta  = html.escape(meta)
-    safe_cta   = html.escape(cta)
-    safe_body  = (
+def _card_html(article: Article) -> str:
+    """One article card. No leading whitespace inside <a> tags — Gmail
+    preserves it as a leading space before the link text."""
+    safe_url   = html.escape(str(article.url))
+    safe_title = html.escape(_article_title(article))
+    safe_meta  = html.escape(_article_meta(article))
+    summary = _summary_to_paragraph(article.summary)
+    safe_body = (
         html.escape(summary) if summary
         else '<em style="color:#888;">No summary available.</em>'
     )
 
-    img = ""
-    if thumbnail:
-        img = (
-            f'<a href="{safe_url}" style="display:block;margin:0 0 14px;">'
-            f'<img src="{html.escape(thumbnail)}" alt="" '
-            f'style="display:block;width:100%;max-width:560px;'
-            f'border-radius:10px;border:0;outline:none;"></a>'
-        )
-
-    authors_block = ""
-    if authors:
-        authors_block = (
-            f'<div style="font-size:13px;color:#475569;margin:0 0 6px;'
-            f'font-style:italic;">{html.escape(authors)}</div>'
-        )
-
-    badge = _kind_badge_html(kind) if kind else ""
-
     return (
         f'<div style="margin:0 0 36px;padding:0 0 28px;border-bottom:1px solid #eee;">'
-        f'{img}'
-        f'<div style="margin:0 0 8px;">{badge}</div>'
         f'<h3 style="font-size:18px;font-weight:700;line-height:1.3;margin:0 0 6px;">'
         f'<a href="{safe_url}" style="color:#0f172a;text-decoration:none;">{safe_title}</a>'
         f'</h3>'
-        f'{authors_block}'
         f'<div style="font-size:12px;color:#94a3b8;margin:0 0 10px;'
         f'text-transform:uppercase;letter-spacing:0.04em;">{safe_meta}</div>'
         f'<p style="font-size:15px;line-height:1.6;color:#334155;margin:0 0 12px;">'
         f'{safe_body}</p>'
         f'<a href="{safe_url}" style="font-size:13px;color:#cc785c;'
-        f'text-decoration:none;font-weight:600;">{safe_cta}</a>'
+        f'text-decoration:none;font-weight:600;">Read more →</a>'
         f'</div>'
-    )
-
-
-def _card_for(kind: str, item) -> str:
-    """Render one (kind, item) tuple as an HTML card with a kind badge."""
-    if kind == "article":
-        return _card_html(
-            url=str(item.url),
-            title=_article_title(item),
-            meta=_article_meta(item),
-            summary=_summary_to_paragraph(item.summary),
-            thumbnail=None,
-            cta="Read more →",
-            kind="article",
-        )
-    # paper
-    return _card_html(
-        url=item.url,
-        title=item.title,
-        authors=_paper_authors(item) or None,
-        meta=_paper_meta(item),
-        summary=_summary_to_paragraph(item.summary),
-        thumbnail=None,
-        cta="Read on arXiv →",
-        kind="paper",
     )
 
 
 def render_html(
     *,
     hours: int,
-    by_topic: dict[str, list[tuple[str, object]]],
+    by_topic: dict[str, list[Article]],
 ) -> str:
     """Inline-styled HTML — no <style> blocks for max client compatibility.
-    Renders one section per topic in DIGEST_TOPIC_ORDER, each card carrying
-    a kind badge (Article / Paper)."""
+    Renders one section per topic in DIGEST_TOPIC_ORDER."""
 
     def section_heading(title: str, count: int) -> str:
         return (
@@ -283,7 +191,7 @@ def render_html(
     for topic in DIGEST_TOPIC_ORDER:
         items = by_topic.get(topic, [])
         total += len(items)
-        cards = [_card_for(kind, item) for kind, item in items]
+        cards = [_card_html(a) for a in items]
         sections_html += section_heading(DIGEST_TOPIC_LABELS[topic], len(items))
         sections_html += section_body(cards)
 
@@ -322,48 +230,28 @@ def render_html(
     )
 
 
-def _text_lines_for(kind: str, item) -> list[str]:
-    """Render one (kind, item) tuple as a list of plain-text lines, with a
-    [KIND] tag prefix on the title line."""
-    tag_map = {"article": "[ARTICLE]", "paper": "[PAPER]"}
-    tag = tag_map.get(kind, "")
-
-    if kind == "article":
-        title     = _article_title(item)
-        url       = str(item.url)
-        meta      = _article_meta(item)
-        paragraph = _summary_to_paragraph(item.summary)
-        return [
-            f"{tag} {title}".strip(),
-            meta,
-            paragraph or "(no summary)",
-            f"-> {url}",
-            "",
-        ]
-    # paper
-    title     = item.title
-    url       = item.url
-    authors   = _paper_authors(item)
-    meta      = _paper_meta(item)
-    paragraph = _summary_to_paragraph(item.summary)
-    out = [f"{tag} {title}".strip()]
-    if authors:
-        out.append(authors)
-    out.append(meta)
-    out.append(paragraph or "(no summary)")
-    out.append(f"-> {url}")
-    out.append("")
-    return out
+def _text_lines(article: Article) -> list[str]:
+    """Render one article as a list of plain-text lines."""
+    title     = _article_title(article)
+    url       = str(article.url)
+    meta      = _article_meta(article)
+    paragraph = _summary_to_paragraph(article.summary)
+    return [
+        title,
+        meta,
+        paragraph or "(no summary)",
+        f"-> {url}",
+        "",
+    ]
 
 
 def render_text(
     *,
     hours: int,
-    by_topic: dict[str, list[tuple[str, object]]],
+    by_topic: dict[str, list[Article]],
 ) -> str:
     """Plain-text fallback for clients that don't render HTML. Sections are
-    organised by topic (matching render_html); kind shown as a [TAG] prefix
-    on each item's title line."""
+    organised by topic (matching render_html)."""
     now = datetime.now(timezone.utc)
     subtitle = " · ".join(DIGEST_TOPIC_LABELS[t] for t in DIGEST_TOPIC_ORDER)
     total = sum(len(items) for items in by_topic.values())
@@ -381,8 +269,8 @@ def render_text(
         if not items:
             lines.extend(["  (nothing new)", ""])
             continue
-        for kind, item in items:
-            lines.extend(_text_lines_for(kind, item))
+        for article in items:
+            lines.extend(_text_lines(article))
 
     lines.append(f"-- generated {now.strftime('%Y-%m-%d %H:%M UTC')} --")
     return "\n".join(lines)
@@ -392,16 +280,13 @@ def render_text(
 # Build
 # ---------------------------------------------------------------------------
 
-def build_digest(
-    hours: int,
-) -> tuple[list[Article], list[Paper]]:
+def build_digest(hours: int) -> list[Article]:
     with get_db() as db:
         articles = get_recent_summarized_articles(db, hours=hours)
-        papers   = get_recent_summarized_papers(db, hours=hours)
         # Detach from session so callers can read attributes after the context exits.
-        for obj in (*articles, *papers):
+        for obj in articles:
             db.expunge(obj)
-    return articles, papers
+    return articles
 
 
 # Order of topic sections in the email. The first topic with a remaining
@@ -423,96 +308,75 @@ DIGEST_TOPIC_LABELS: dict[str, str] = {
     "general":    "General News",
 }
 
-# Within a single topic section, no one source/channel may contribute more
+# Within a single topic section, no one source may contribute more
 # than this many items. Diversity guard against a single publisher dominating.
 DIGEST_MAX_PER_SOURCE: int = 2
 
 
-def _diversity_key(kind: str, item) -> str | None:
-    """Return a per-section diversity key, or None if the kind doesn't enforce one.
-
-    Articles dedupe by source. Papers don't enforce a cap because every paper
-    is unique by arxiv_id - one publisher (arxiv, hf_daily) can legitimately
-    surface multiple distinct papers.
-    """
-    if kind == "article":
-        return f"a:{getattr(item, 'source', None)}"
-    return None  # papers
-
-
 def cap_by_topic(
     articles: list[Article],
-    papers: list[Paper],
     max_items: int,
-) -> dict[str, list[tuple[str, object]]]:
+) -> dict[str, list[Article]]:
     """
-    Distribute items across topic sections with per-source diversity inside
-    each section. Returns a dict keyed by topic (in DIGEST_TOPIC_ORDER order),
-    each value a list of (kind, item) tuples sorted by published_at desc.
+    Distribute articles across topic sections with per-source diversity
+    inside each section. Returns a dict keyed by topic (in DIGEST_TOPIC_ORDER
+    order), each value a list of articles sorted by published_at desc.
 
     Quota: max_items split as evenly as possible across DIGEST_TOPIC_ORDER.
     For max_items=15 across 5 topics: 3/3/3/3/3.
 
     Multi-topic items: a row tagged ["ai", "technology"] is rendered in the
     first matching topic in DIGEST_TOPIC_ORDER and never duplicated. The
-    `placed` set tracks (kind, id) pairs across topics.
+    `placed` set tracks article ids across topics.
 
     Per-source diversity: within a single topic, no source exceeds
-    DIGEST_MAX_PER_SOURCE items. Papers don't enforce diversity.
+    DIGEST_MAX_PER_SOURCE items.
     """
     EARLIEST = datetime.min.replace(tzinfo=timezone.utc)
 
-    # Unified stream sorted by recency desc - one pass, used for every topic.
-    stream: list[tuple[str, object, datetime]] = []
-    stream += [("article", a, a.published_at or EARLIEST) for a in articles]
-    stream += [("paper",   p, p.published_at or EARLIEST) for p in papers]
-    stream.sort(key=lambda t: t[2], reverse=True)
+    # Sorted by recency desc - one pass, used for every topic.
+    stream = sorted(
+        articles,
+        key=lambda a: a.published_at or EARLIEST,
+        reverse=True,
+    )
 
     n_topics = len(DIGEST_TOPIC_ORDER)
     base, rem = divmod(max(0, max_items), n_topics)
     quotas = {t: base + (1 if i < rem else 0) for i, t in enumerate(DIGEST_TOPIC_ORDER)}
 
-    placed: set[tuple[str, int]] = set()
-    by_topic: dict[str, list[tuple[str, object]]] = {t: [] for t in DIGEST_TOPIC_ORDER}
+    placed: set[int] = set()
+    by_topic: dict[str, list[Article]] = {t: [] for t in DIGEST_TOPIC_ORDER}
 
     for topic in DIGEST_TOPIC_ORDER:
         quota = quotas[topic]
         if quota <= 0:
             continue
         source_counts: dict[str, int] = {}
-        for kind, item, _date in stream:
+        for article in stream:
             if len(by_topic[topic]) >= quota:
                 break
-            key = (kind, item.id)
-            if key in placed:
+            if article.id in placed:
                 continue
-            if topic not in (getattr(item, "topics", None) or []):
+            if topic not in (article.topics or []):
                 continue
-            div_key = _diversity_key(kind, item)
-            if div_key is not None:
-                if source_counts.get(div_key, 0) >= DIGEST_MAX_PER_SOURCE:
-                    continue
-                source_counts[div_key] = source_counts.get(div_key, 0) + 1
-            by_topic[topic].append((kind, item))
-            placed.add(key)
+            src = article.source
+            if source_counts.get(src, 0) >= DIGEST_MAX_PER_SOURCE:
+                continue
+            source_counts[src] = source_counts.get(src, 0) + 1
+            by_topic[topic].append(article)
+            placed.add(article.id)
 
     return by_topic
 
 
-def flatten_by_topic(
-    by_topic: dict[str, list[tuple[str, object]]],
-) -> tuple[list[Article], list[Paper]]:
-    """Split a by_topic dict back into per-kind lists. Used by the post-send
-    mark step which still operates per-table."""
-    articles: list[Article] = []
-    papers:   list[Paper]   = []
+def flatten_by_topic(by_topic: dict[str, list[Article]]) -> list[Article]:
+    """Flatten a by_topic dict back into one article list. Used by the
+    post-send mark step."""
+    out: list[Article] = []
     for items in by_topic.values():
-        for kind, item in items:
-            if kind == "article":
-                articles.append(item)   # type: ignore[arg-type]
-            elif kind == "paper":
-                papers.append(item)     # type: ignore[arg-type]
-    return articles, papers
+        out.extend(items)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -567,19 +431,18 @@ def main() -> None:
                         help="Render to stdout instead of sending.")
     parser.add_argument("--max-items", type=int, default=15,
                         help="Cap total items in the digest. Quotas split evenly "
-                             "across DIGEST_TOPIC_ORDER (default 4 topics → 4/4/4/3 "
-                             "at max=15). Within each topic no one source may "
+                             "across DIGEST_TOPIC_ORDER (5 topics → 3/3/3/3/3 at "
+                             "max=15). Within each topic no one source may "
                              "contribute more than DIGEST_MAX_PER_SOURCE items "
                              "(default 2). Multi-topic items render in the first "
                              "matching topic only. Default: 15.")
     args = parser.parse_args()
 
-    articles, papers = build_digest(hours=args.hours)
-    pre_total = len(articles) + len(papers)
-    print(f"[digest] {len(articles)} article(s), {len(papers)} paper(s) "
-          f"in last {args.hours}h.")
+    articles = build_digest(hours=args.hours)
+    pre_total = len(articles)
+    print(f"[digest] {pre_total} article(s) in last {args.hours}h.")
 
-    by_topic = cap_by_topic(articles, papers, max_items=args.max_items)
+    by_topic = cap_by_topic(articles, max_items=args.max_items)
     total = sum(len(items) for items in by_topic.values())
     if total < pre_total:
         print(f"[digest] capped from {pre_total} to {total} items (--max-items={args.max_items}).")
@@ -587,11 +450,7 @@ def main() -> None:
     # Per-topic placement breakdown (mirrors the verification report format).
     for topic in DIGEST_TOPIC_ORDER:
         items = by_topic.get(topic, [])
-        kinds = {"article": 0, "paper": 0}
-        for k, _ in items:
-            kinds[k] = kinds.get(k, 0) + 1
-        print(f"  [{DIGEST_TOPIC_LABELS[topic]}] {len(items)} item(s) "
-              f"(articles={kinds['article']}, papers={kinds['paper']})")
+        print(f"  [{DIGEST_TOPIC_LABELS[topic]}] {len(items)} item(s)")
 
     if total == 0:
         print("[digest] Nothing to send. Exiting.")
@@ -635,21 +494,17 @@ def main() -> None:
     # Mark every row that was actually included so the same content never
     # appears in a future digest. We mark AFTER the send so a SMTP failure
     # leaves the rows unsent and they get a second chance on the next run.
-    sent_articles, sent_papers = flatten_by_topic(by_topic)
-    _mark_sent(sent_articles, sent_papers)
+    sent_articles = flatten_by_topic(by_topic)
+    _mark_sent(sent_articles)
 
 
-def _mark_sent(
-    articles: list[Article],
-    papers:   list[Paper],
-) -> None:
+def _mark_sent(articles: list[Article]) -> None:
     """Stamp digest_sent_at = NOW() on every row that just shipped."""
     try:
         with get_db() as db:
             n_a = mark_digest_sent(db, Article, [a.id for a in articles])
-            n_p = mark_digest_sent(db, Paper,   [p.id for p in papers])
-        print(f"[digest] Marked {n_a} article(s), {n_p} paper(s) as sent.")
-    except Exception as e:  # noqa: BLE001 - mark failure is recoverable; double-email better than silent loss
+        print(f"[digest] Marked {n_a} article(s) as sent.")
+    except Exception as e:  # noqa: BLE001 - mark failure is recoverable
         print(f"[digest] WARNING: send succeeded but mark_digest_sent failed: {e}")
 
 

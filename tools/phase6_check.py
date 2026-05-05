@@ -1,16 +1,13 @@
 """
-tools/phase6_check.py - end-to-end backtest (multi-source plan, Phase 6).
+tools/phase6_check.py - end-to-end backtest for the multi-source plan.
 
 Drives Runner programmatically with hours=72. Captures the report and
 asserts:
 
-  - Every enabled source returns a number (no unhandled exceptions).
-  - >= 70% of enabled blog/paper sources fetched >= 1 item.
-  - arxiv source fetched >= 5 (plan said >=10; capped by max_results=10
-    in your config, so anything from ~5 upward is healthy).
-  - hf_daily source fetched >= 5.
-  - Idempotency: running twice in a row produces 0 inserts on the second run
-    (papers + blogs).
+  - Every enabled blog source returns a number (no unhandled exceptions).
+  - >= 70% of enabled blog sources fetched >= 1 item.
+  - openai_news fetched >= 1.
+  - Idempotency: running twice in a row produces 0 inserts on the second run.
 
 For the manual sub-tests (plan steps 5 + 6):
   - Content-fetch test: edit one entry in config/sources.json to
@@ -22,7 +19,7 @@ For the manual sub-tests (plan steps 5 + 6):
 
 Run:
     python tools/phase6_check.py                   # backtest with current DB state
-    python tools/phase6_check.py --truncate        # WIPE articles + papers first
+    python tools/phase6_check.py --truncate        # WIPE articles first
 """
 from __future__ import annotations
 
@@ -41,15 +38,13 @@ from runner import Runner
 PHASE_6_HOURS = 72
 
 
-def truncate_articles_and_papers() -> None:
-    print("[truncate] DELETE FROM articles, papers ...")
+def truncate_articles() -> None:
+    print("[truncate] DELETE FROM articles ...")
     with get_db() as db:
         db.execute(text("TRUNCATE TABLE articles RESTART IDENTITY"))
-        db.execute(text("TRUNCATE TABLE papers   RESTART IDENTITY"))
     with get_db() as db:
         a = db.execute(text("SELECT COUNT(*) FROM articles")).scalar()
-        p = db.execute(text("SELECT COUNT(*) FROM papers")).scalar()
-        print(f"[truncate] post-truncate: articles={a}, papers={p}\n")
+        print(f"[truncate] post-truncate: articles={a}\n")
 
 
 def summarize_block(label: str, block: dict, *, expect_zero_inserts: bool) -> tuple[bool, list[str]]:
@@ -105,7 +100,7 @@ def assert_source_minimum(block: dict, source_id: str, minimum: int,
 
 def run_phase_6(*, truncate: bool) -> int:
     if truncate:
-        truncate_articles_and_papers()
+        truncate_articles()
 
     runner = Runner(hours=PHASE_6_HOURS)
 
@@ -129,29 +124,20 @@ def run_phase_6(*, truncate: bool) -> int:
     problems: list[str] = []
 
     print("\nRUN 1 - per-source 70% gate")
-    ok, p = summarize_block("blogs",  report_1["blogs"],  expect_zero_inserts=False)
-    problems += p
-    print()
-    ok, p = summarize_block("papers", report_1["papers"], expect_zero_inserts=False)
+    ok, p = summarize_block("blogs", report_1["blogs"], expect_zero_inserts=False)
     problems += p
 
     print("\nRUN 1 - per-source minimums")
     for source_id, minimum in [
-        ("openai_news",      1),
-        ("arxiv_cs_lg_ai",   5),
-        ("hf_daily_papers",  5),
+        ("openai_news", 1),
     ]:
-        block = report_1["papers"] if source_id in report_1["papers"]["sources"] else report_1["blogs"]
-        ok, msg = assert_source_minimum(block, source_id, minimum, run_label="RUN 1")
+        ok, msg = assert_source_minimum(report_1["blogs"], source_id, minimum, run_label="RUN 1")
         print(f"    {'OK' if ok else 'FAIL'}: {source_id} >= {minimum}")
         if not ok and msg:
             problems.append(msg)
 
     print("\nRUN 2 - idempotency (expect 0 inserts everywhere)")
-    ok, p = summarize_block("blogs",  report_2["blogs"],  expect_zero_inserts=True)
-    problems += p
-    print()
-    ok, p = summarize_block("papers", report_2["papers"], expect_zero_inserts=True)
+    ok, p = summarize_block("blogs", report_2["blogs"], expect_zero_inserts=True)
     problems += p
 
     print("\n" + "=" * 60)
@@ -160,7 +146,7 @@ def run_phase_6(*, truncate: bool) -> int:
         for problem in problems:
             print(f"  - {problem}")
         return 1
-    print("RESULT: OK - Phase 6 acceptance met for the automated checks.")
+    print("RESULT: OK - acceptance met for the automated checks.")
     print("        Remaining manual sub-tests (plan steps 5 + 6):")
     print("          - flip a blog source's fetch_content=true, re-run main.py,")
     print("            verify content_md is populated for new rows")
@@ -170,10 +156,10 @@ def run_phase_6(*, truncate: bool) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 6 end-to-end backtest.")
+    parser = argparse.ArgumentParser(description="End-to-end backtest.")
     parser.add_argument(
         "--truncate", action="store_true",
-        help="WIPE the articles and papers tables before running. "
+        help="WIPE the articles table before running. "
              "Use to get clean before/after counts.",
     )
     args = parser.parse_args()

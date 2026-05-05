@@ -46,12 +46,6 @@ VERIFIED: list[tuple[str, str]] = [
      "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_engineering.xml"),
     ("openai_news",
      "https://openai.com/news/rss.xml"),
-    ("arxiv_cs_lg_ai",
-     "http://export.arxiv.org/api/query?"
-     "search_query=cat:cs.LG+OR+cat:cs.AI"
-     "&max_results=20&sortBy=submittedDate&sortOrder=descending"),
-    ("hf_daily_papers",
-     "https://papers.takara.ai/api/feed"),
 ]
 
 # Section 4.2 - candidates to verify before adding.
@@ -74,8 +68,6 @@ CANDIDATES: list[tuple[str, str]] = [
      "https://venturebeat.com/category/ai/feed/"),
     ("mit_news_ai",
      "https://news.mit.edu/topic/artificial-intelligence2-rss.xml"),
-    ("hf_daily_fallback",
-     "https://raw.githubusercontent.com/huangboming/huggingface-daily-paper-feed/main/feed.xml"),
 ]
 
 

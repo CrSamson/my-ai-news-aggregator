@@ -2,7 +2,7 @@
 scrapers/schemas.py - Pydantic v2 schemas for scraper output.
 
 These are the validated payloads scrapers produce; the CRUD layer maps
-them to Article / Paper rows.
+them to Article rows.
 
 Two intentional design notes:
   - `summary` is always None at scrape time. It's the LLM-output column
@@ -30,25 +30,5 @@ class BlogArticle(BaseModel):
     content_fetched: bool = False
     topics         : list[str] = []       # from source_config["topics"]
     raw_metadata   : dict = {}
-
-    model_config = {"frozen": True}
-
-
-class Paper(BaseModel):
-    """One paper from arXiv or HuggingFace Daily Papers (used in Phase 4-5)."""
-
-    sources         : list[str]                    # e.g. ["arxiv"], ["arxiv","hf_daily"]
-    arxiv_id        : str | None = None
-    url             : str
-    pdf_url         : str | None = None
-    title           : str
-    authors         : list[str] = []
-    abstract        : str | None = None
-    categories      : list[str] = []
-    published_at    : datetime | None = None
-    updated_at_arxiv: datetime | None = None
-    hf_upvotes      : int | None = None
-    topics          : list[str] = []               # from source_config["topics"]
-    raw_metadata    : dict = {}
 
     model_config = {"frozen": True}

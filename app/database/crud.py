@@ -2,7 +2,7 @@
 app/database/crud.py — Single CRUD interface for all database operations.
 
 Uses PostgreSQL ON CONFLICT … DO UPDATE (upsert) so scrapers can safely
-re-insert the same article or video without duplicates.
+re-insert the same article without duplicates.
 """
 
 import logging
@@ -13,8 +13,8 @@ from sqlalchemy import func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import Article, Paper
-from scrapers.schemas import BlogArticle, Paper as PaperItem
+from app.database.models import Article
+from scrapers.schemas import BlogArticle
 
 
 log = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ def _digest_cutoff(hours: int) -> datetime:
 
 
 # ===================================================================
-# Generalized Articles (multi-source plan, Phase 2)
+# Articles
 # ===================================================================
 
 def upsert_articles(db: Session, items: list[BlogArticle]) -> dict:
@@ -148,243 +148,7 @@ def get_recent_summarized_articles(db: Session, hours: int) -> list[Article]:
 
 
 # ===================================================================
-# Generalized Papers (multi-source plan, Phase 4)
-# ===================================================================
-
-# Postgres expression: dedup the union of two text arrays.
-# Used in upsert_papers' ON CONFLICT SET clause to merge `sources`.
-_SOURCES_UNION = text(
-    "ARRAY(SELECT DISTINCT unnest(papers.sources || EXCLUDED.sources))"
-)
-
-# Same idea for the `topics` array - used by all three content-table upserts.
-# Each table name is interpolated since the FROM clause changes per table.
-def _topics_union(table_name: str) -> text:
-    return text(
-        f"ARRAY(SELECT DISTINCT unnest({table_name}.topics || EXCLUDED.topics))"
-    )
-
-
-def upsert_papers(db: Session, items: list[PaperItem]) -> dict:
-    """
-    Upsert a batch of Paper items (conflict key: arxiv_id).
-
-    Returns {"inserted": N, "updated": N, "total": N, "skipped": N}.
-
-    On conflict (matching arxiv_id), this:
-      - Merges `sources` arrays via DISTINCT unnest (so a Phase-5 HF Daily
-        ingestion appends 'hf_daily' to an existing arxiv-only row).
-      - Keeps the existing `hf_upvotes` if the new row's value is NULL
-        (so an arxiv-only re-scrape never blanks an HF count).
-      - Refreshes title / authors / abstract / categories / pdf_url /
-        published_at / updated_at_arxiv from the new payload.
-
-    Items with `arxiv_id is None` are logged and skipped. The plan §4.1
-    allows a URL-fallback conflict path; that's deferred until we
-    actually have a non-arxiv paper source.
-
-    Insert vs update is detected via Postgres' xmax trick:
-        xmax = 0  -> row was just inserted
-        xmax != 0 -> row already existed and ON CONFLICT fired
-    """
-    inserted = 0
-    updated  = 0
-    skipped  = 0
-
-    for item in items:
-        if item.arxiv_id is None:
-            log.warning("[upsert_papers] item has no arxiv_id; skipping url=%s", item.url)
-            skipped += 1
-            continue
-
-        values = {
-            "sources"         : item.sources,
-            "arxiv_id"        : item.arxiv_id,
-            "url"             : item.url,
-            "pdf_url"         : item.pdf_url,
-            "title"           : item.title,
-            "authors"         : item.authors,
-            "abstract"        : item.abstract,
-            "categories"      : item.categories,
-            "published_at"    : item.published_at,
-            "updated_at_arxiv": item.updated_at_arxiv,
-            "hf_upvotes"      : item.hf_upvotes,
-            "topics"          : item.topics,
-            "raw_metadata"    : item.raw_metadata or {},
-        }
-
-        stmt = pg_insert(Paper).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["arxiv_id"],
-            index_where=text("arxiv_id IS NOT NULL"),  # match the partial index
-            set_={
-                "sources"         : _SOURCES_UNION,
-                "title"           : stmt.excluded.title,
-                "authors"         : stmt.excluded.authors,
-                "abstract"        : stmt.excluded.abstract,
-                "categories"      : stmt.excluded.categories,
-                "pdf_url"         : stmt.excluded.pdf_url,
-                "published_at"    : stmt.excluded.published_at,
-                "updated_at_arxiv": stmt.excluded.updated_at_arxiv,
-                # Keep existing hf_upvotes if the new row didn't provide one.
-                "hf_upvotes"      : func.coalesce(
-                    stmt.excluded.hf_upvotes, Paper.hf_upvotes
-                ),
-                # Topics merge as a deduped union (mirrors `sources`).
-                "topics"          : _topics_union("papers"),
-                "updated_at"      : func.now(),
-            },
-        ).returning(literal_column("(xmax = 0)").label("was_inserted"))
-
-        was_inserted = db.execute(stmt).scalar()
-        if was_inserted:
-            inserted += 1
-        else:
-            updated += 1
-
-    db.flush()
-    return {
-        "inserted": inserted,
-        "updated":  updated,
-        "total":    inserted + updated,
-        "skipped":  skipped,
-    }
-
-
-def merge_hf_daily_papers(db: Session, items: list[PaperItem]) -> dict:
-    """
-    Merge HuggingFace Daily Papers entries into the papers table (Phase 5).
-
-    Returns {"inserted": N, "updated": N, "total": N, "skipped": N}.
-
-    Semantics — different from upsert_papers on purpose:
-
-      INSERT (no existing row with this arxiv_id):
-        Use HF's data as-is. arxiv-quality data may overwrite later when
-        ArxivScraper covers the same paper.
-
-      UPDATE (row already exists, e.g. ingested by ArxivScraper):
-        - sources:    array union (so {'arxiv'} -> {'arxiv','hf_daily'})
-        - hf_upvotes: COALESCE(new, existing)  -> set if new is non-null,
-                       keep existing otherwise
-        - updated_at: refresh
-        title / authors / abstract / categories / pdf_url / published_at /
-        updated_at_arxiv are LEFT ALONE so we don't clobber the arXiv-
-        sourced versions with HF's potentially weaker text.
-
-    Items with `arxiv_id is None` are logged and skipped.
-    """
-    inserted = 0
-    updated  = 0
-    skipped  = 0
-
-    for item in items:
-        if item.arxiv_id is None:
-            log.warning(
-                "[merge_hf_daily_papers] item has no arxiv_id; skipping url=%s",
-                item.url,
-            )
-            skipped += 1
-            continue
-
-        values = {
-            "sources"         : item.sources,
-            "arxiv_id"        : item.arxiv_id,
-            "url"             : item.url,
-            "pdf_url"         : item.pdf_url,
-            "title"           : item.title,
-            "authors"         : item.authors,
-            "abstract"        : item.abstract,
-            "categories"      : item.categories,
-            "published_at"    : item.published_at,
-            "updated_at_arxiv": item.updated_at_arxiv,
-            "hf_upvotes"      : item.hf_upvotes,
-            "topics"          : item.topics,
-            "raw_metadata"    : item.raw_metadata or {},
-        }
-
-        stmt = pg_insert(Paper).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["arxiv_id"],
-            index_where=text("arxiv_id IS NOT NULL"),
-            set_={
-                "sources"   : _SOURCES_UNION,
-                "hf_upvotes": func.coalesce(
-                    stmt.excluded.hf_upvotes, Paper.hf_upvotes
-                ),
-                # Same union semantics as `sources` so HF Daily contributes
-                # its topic tags to an existing arxiv-only row.
-                "topics"    : _topics_union("papers"),
-                "updated_at": func.now(),
-            },
-        ).returning(literal_column("(xmax = 0)").label("was_inserted"))
-
-        was_inserted = db.execute(stmt).scalar()
-        if was_inserted:
-            inserted += 1
-        else:
-            updated += 1
-
-    db.flush()
-    return {
-        "inserted": inserted,
-        "updated":  updated,
-        "total":    inserted + updated,
-        "skipped":  skipped,
-    }
-
-
-def get_all_papers(db: Session) -> list[Paper]:
-    """Return all Papers, newest first."""
-    stmt = select(Paper).order_by(Paper.published_at.desc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def get_unsummarized_papers(db: Session, limit: Optional[int] = None) -> list[Paper]:
-    """Return Papers whose summary is NULL or empty, newest first."""
-    stmt = (
-        select(Paper)
-        .where(or_(Paper.summary.is_(None), Paper.summary == ""))
-        .order_by(Paper.published_at.desc())
-    )
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return list(db.execute(stmt).scalars().all())
-
-
-def set_paper_summary(
-    db: Session,
-    paper_id: int,
-    summary: str,
-    topics: list[str] | None = None,
-) -> None:
-    """Persist a generated summary for one Paper. If `topics` is provided
-    (LLM-classified), it overwrites the source-declared tags."""
-    paper = db.get(Paper, paper_id)
-    if paper is None:
-        raise ValueError(f"Paper id={paper_id} not found")
-    paper.summary = summary
-    if topics is not None:
-        paper.topics = topics
-
-
-def get_recent_summarized_papers(db: Session, hours: int) -> list[Paper]:
-    """Return Papers published in the last `hours` hours that have a non-empty
-    summary AND have not already been included in a sent digest."""
-    cutoff = _digest_cutoff(hours)
-    stmt = (
-        select(Paper)
-        .where(Paper.summary.isnot(None))
-        .where(Paper.summary != "")
-        .where(Paper.published_at >= cutoff)
-        .where(Paper.digest_sent_at.is_(None))
-        .order_by(Paper.published_at.desc())
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
-# ===================================================================
-# Digest send-state (shared across all three content kinds)
+# Digest send-state
 # ===================================================================
 
 def mark_digest_sent(db: Session, model, ids: list[int]) -> int:
@@ -396,7 +160,7 @@ def mark_digest_sent(db: Session, model, ids: list[int]) -> int:
     Returns the number of rows updated.
 
     Idempotent: re-applying to the same ids just refreshes the timestamp.
-    `model` must have a `digest_sent_at` column - works for Article and Paper.
+    `model` must have a `digest_sent_at` column.
     """
     if not ids:
         return 0

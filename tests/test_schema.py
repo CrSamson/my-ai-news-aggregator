@@ -1,11 +1,9 @@
 """
-tests/test_schema.py — schema-level smoke test for the multi-source plan.
+tests/test_schema.py — schema-level smoke test.
 
 Asserts (using SQLAlchemy reflection, not pytest):
-  - tables `articles` and `papers` exist
+  - table `articles` exists
   - `articles.url` has a unique constraint or unique index
-  - `papers.url` has a unique constraint or unique index
-  - `papers.arxiv_id` has a unique index (the partial one)
 
 Plain script — no test framework dependency. Exits 0 on pass, 1 on failure.
 
@@ -41,28 +39,16 @@ def main() -> int:
     table_names = set(insp.get_table_names())
     failures: list[str] = []
 
-    for table in ("articles", "papers"):
-        if table in table_names:
-            print(f"[ok] table '{table}' exists")
-        else:
-            failures.append(f"missing table: {table}")
+    if "articles" in table_names:
+        print("[ok] table 'articles' exists")
+    else:
+        failures.append("missing table: articles")
 
     if "articles" in table_names:
         if _has_unique_on(insp, "articles", "url"):
             print("[ok] articles.url is unique")
         else:
             failures.append("articles.url is not unique")
-
-    if "papers" in table_names:
-        if _has_unique_on(insp, "papers", "url"):
-            print("[ok] papers.url is unique")
-        else:
-            failures.append("papers.url is not unique")
-
-        if _has_unique_on(insp, "papers", "arxiv_id"):
-            print("[ok] papers.arxiv_id has a unique index (partial)")
-        else:
-            failures.append("papers.arxiv_id has no unique index")
 
     if failures:
         print("\nFAIL:")

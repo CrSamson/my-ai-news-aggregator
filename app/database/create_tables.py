@@ -20,22 +20,18 @@ from app.database.db import engine
 from app.database.models import (  # noqa: F401
     Base,
     Article,
-    Paper,
 )
 
 
 # (table, column, ddl-fragment) — kept here so re-running this script is enough
 # to bring an existing DB in line with the current models.
 _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
-    ("papers",         "summary",        "TEXT"),  # nullable, matches Article.summary
     # Digest send-state. NULL = not yet emailed; set to NOW() once a digest
     # containing the row is successfully sent. See agent/digest.py.
-    ("articles",       "digest_sent_at", "TIMESTAMPTZ"),
-    ("papers",         "digest_sent_at", "TIMESTAMPTZ"),
+    ("articles", "digest_sent_at", "TIMESTAMPTZ"),
     # Topic tags inherited from source config in sources.json.
     # Empty array on existing rows until tools/backfill_topics.py runs.
-    ("articles",       "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
-    ("papers",         "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
+    ("articles", "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
 ]
 
 # Tables removed from the schema. DROPped on every run so a stale Neon DB
@@ -43,6 +39,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
 # once the table is gone. Carried for one or two migrations, then prunable.
 _DROPPED_TABLES: list[str] = [
     "youtube_videos",
+    "papers",
 ]
 
 

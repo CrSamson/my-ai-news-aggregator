@@ -3,8 +3,8 @@ agent/scheduler.py — Daily pipeline driver.
 
 Runs the full pipeline once per day at a configurable local time:
 
-    1. Scrape RSS sources (blogs + papers)
-    2. Summarize any rows still missing a summary
+    1. Scrape RSS blog sources
+    2. Summarize any articles still missing a summary
     3. Build and email the digest
 
 Run modes:
@@ -47,13 +47,11 @@ from agent.digest import (
 from agent.summarizer import Summarizer
 from app.database.crud import (
     get_unsummarized_articles,
-    get_unsummarized_papers,
     mark_digest_sent,
     set_article_summary,
-    set_paper_summary,
 )
 from app.database.db import get_db
-from app.database.models import Article, Paper
+from app.database.models import Article
 from runner import Runner
 
 
@@ -80,13 +78,11 @@ def _scrape(hours: int) -> None:
 
 
 def _summarize() -> None:
-    log.info("step 2/3 — summarizing unsummarized rows")
+    log.info("step 2/3 — summarizing unsummarized articles")
     summarizer = Summarizer()
     with get_db() as db:
         articles = get_unsummarized_articles(db)
-        papers   = get_unsummarized_papers(db)
-        log.info("  %d article(s), %d paper(s) to summarize",
-                 len(articles), len(papers))
+        log.info("  %d article(s) to summarize", len(articles))
 
         for a in articles:
             try:
@@ -95,23 +91,16 @@ def _summarize() -> None:
             except Exception as e:  # noqa: BLE001 — keep batch going
                 log.warning("    article id=%s failed: %s", a.id, e)
 
-        for p in papers:
-            try:
-                summary, topics = summarizer.summarize_paper(p)
-                set_paper_summary(db, p.id, summary, topics=topics)
-            except Exception as e:  # noqa: BLE001
-                log.warning("    paper id=%s failed: %s", p.id, e)
-
 
 def _email_digest(hours: int, max_items: int | None = None) -> None:
     log.info("step 3/3 — building + sending digest (window=%dh, max_items=%s)",
              hours, max_items)
-    articles, papers = build_digest(hours=hours)
-    pre_total = len(articles) + len(papers)
+    articles = build_digest(hours=hours)
+    pre_total = len(articles)
 
     # max_items=None means no cap — use a huge number so quotas don't trim.
     cap = max_items if max_items is not None else (pre_total or 1)
-    by_topic = cap_by_topic(articles, papers, max_items=cap)
+    by_topic = cap_by_topic(articles, max_items=cap)
     total = sum(len(items) for items in by_topic.values())
     if total < pre_total:
         log.info("  capped from %d to %d items (max_items=%s)",
@@ -148,12 +137,11 @@ def _email_digest(hours: int, max_items: int | None = None) -> None:
 
     # Mark every row that was actually emailed so it never ships twice. We
     # mark AFTER the send so an SMTP failure leaves rows unsent for retry.
-    sent_articles, sent_papers = flatten_by_topic(by_topic)
+    sent_articles = flatten_by_topic(by_topic)
     try:
         with get_db() as db:
             n_a = mark_digest_sent(db, Article, [a.id for a in sent_articles])
-            n_p = mark_digest_sent(db, Paper,   [p.id for p in sent_papers])
-        log.info("  marked sent: %d article(s), %d paper(s)", n_a, n_p)
+        log.info("  marked sent: %d article(s)", n_a)
     except Exception as e:  # noqa: BLE001 - mark failure is recoverable
         log.warning("  send succeeded but mark_digest_sent failed: %s", e)
 

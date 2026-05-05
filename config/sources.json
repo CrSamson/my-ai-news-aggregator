@@ -1,5 +1,5 @@
 {
-  "_comment": "Driver config for the multi-source aggregator. blogs[] is consumed by RssBlogScraper; papers[] is consumed by the arxiv + hf_daily scrapers. Set fetch_content=true to pull full article markdown via trafilatura. `topics` is the list of topic tags every item from this source inherits. fetch_content decisions follow the Phase 3a A/B matrix: enabled for sources with thin RSS (<100 char body), disabled where RSS is adequate or trafilatura is known to truncate (Wired, The Verge).",
+  "_comment": "Driver config for the RSS blog aggregator. blogs[] is consumed by RssBlogScraper. Set fetch_content=true to pull full article markdown via trafilatura. `topics` is the list of topic tags every item from this source inherits. fetch_content decisions follow the Phase 3a A/B matrix: enabled for sources with thin RSS (<100 char body), disabled where RSS is adequate or trafilatura is known to truncate (Wired, The Verge).",
 
   "blogs": [
     {
@@ -295,29 +295,6 @@
       "enabled": true,
       "fragile": false,
       "topics": ["general"]
-    }
-  ],
-
-  "papers": [
-    {
-      "id": "arxiv_cs_lg_ai",
-      "name": "arXiv cs.LG + cs.AI",
-      "type": "arxiv",
-      "categories": ["cs.LG", "cs.AI"],
-      "max_results": 10,
-      "keyword_filter": null,
-      "enabled": true,
-      "topics": ["ai", "science"]
-    },
-    {
-      "id": "hf_daily_papers",
-      "name": "Hugging Face Daily Papers",
-      "type": "hf_daily",
-      "feed_url": "https://raw.githubusercontent.com/huangboming/huggingface-daily-paper-feed/main/feed.xml",
-      "fallback_feed_url": "https://papers.takara.ai/api/feed",
-      "enabled": true,
-      "fragile": true,
-      "topics": ["ai"]
     }
   ]
 }
