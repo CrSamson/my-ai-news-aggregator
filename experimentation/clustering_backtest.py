@@ -373,6 +373,25 @@ def main() -> None:
                        hdbscan_summaries[PROD_T], meta,
                        top_k=8, max_per_cluster=6)
 
+    # ---- HDBSCAN's actual tightening knob: min_cluster_size ----
+    # The threshold sweep above shows hdbscan plateaus between 0.65 and 0.75
+    # because cluster_selection_epsilon is a "merge floor" and no natural
+    # merge candidates sit in the (0.25, 0.35) distance window. To tighten
+    # HDBSCAN you raise min_cluster_size or switch cluster_selection_method.
+    # This sweep holds threshold=0.65 and varies min_cluster_size from 2 to 6.
+    print(f"\n\n=== HDBSCAN min_cluster_size sweep at threshold {PROD_T:.2f} ===")
+    print(f"  (cluster_selection_epsilon = {1 - PROD_T:.2f}, "
+          f"cluster_selection_method='leaf')")
+    print(f"  {'min_cs':>7} {'#clusters':>10} {'#single':>8} {'#multi':>7} "
+          f"{'max':>5} {'intra_homog':>12} {'#multi_xsrc':>12}")
+    for mcs in [2, 3, 4, 5, 6]:
+        labels = hdbscan_cluster(E, PROD_T, min_cluster_size=mcs)
+        s = summarise(labels, E, meta)
+        print(f"  {mcs:>7d} {s['n_clusters']:>10d} {s['n_singletons']:>8d} "
+              f"{s['n_multi']:>7d} {s['max_size']:>5d} "
+              f"{s['mean_intra_homog']:>12.3f} "
+              f"{s['n_multi_xsource']:>12d}")
+
     # ---- where do the algos disagree? ----
     print("\n\n=== disagreement analysis at "
           f"threshold {PROD_T:.2f} ===")
