@@ -119,6 +119,7 @@ def load_embeddings_and_metadata():
                 "id":           r.id,
                 "source":       r.source,
                 "title":        r.title or "",
+                "url":          r.url or "",
                 "published_at": r.published_at,
                 "topics":       list(r.topics or []),
             })
