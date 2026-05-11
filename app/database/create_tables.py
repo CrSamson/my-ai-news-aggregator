@@ -21,6 +21,7 @@ from app.database.models import (  # noqa: F401
     Base,
     Article,
     EMBEDDING_DIM,
+    Story,
 )
 
 
@@ -57,6 +58,9 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("articles", "topics",         "VARCHAR[] NOT NULL DEFAULT ARRAY[]::varchar[]"),
     # Per-article OpenAI embedding. NULL until agent/embedder runs.
     ("articles", "embedding",      f"VECTOR({EMBEDDING_DIM})"),
+    # FK into stories.id. NULL until agent/clusterer runs. ON DELETE SET
+    # NULL so deleting a story doesn't cascade to its member articles.
+    ("articles", "story_id",       "BIGINT REFERENCES stories(id) ON DELETE SET NULL"),
 ]
 
 
@@ -64,11 +68,28 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
 # so re-runs are idempotent.
 _EXTRA_INDICES: list[tuple[str, str]] = [
     # HNSW index for cosine-similarity nearest-neighbour search on the
-    # article embedding. Phase 4's clusterer queries this.
+    # article embedding.
     (
         "ix_articles_embedding_hnsw",
         "CREATE INDEX IF NOT EXISTS ix_articles_embedding_hnsw "
         "ON articles USING hnsw (embedding vector_cosine_ops)",
+    ),
+    # HNSW index for cosine-similarity nearest-neighbour search on story
+    # centroids. The clusterer's hot path is "find the closest active
+    # story to this new article", which is exactly this index's job.
+    (
+        "ix_stories_centroid_hnsw",
+        "CREATE INDEX IF NOT EXISTS ix_stories_centroid_hnsw "
+        "ON stories USING hnsw (centroid vector_cosine_ops)",
+    ),
+    # Plain btree on story_id so 'get every article belonging to story X'
+    # is fast. ORM-level index=True on the column also produces this; the
+    # CREATE INDEX IF NOT EXISTS here is a belt-and-suspenders for hand-run
+    # migrations.
+    (
+        "ix_articles_story_id",
+        "CREATE INDEX IF NOT EXISTS ix_articles_story_id "
+        "ON articles (story_id)",
     ),
 ]
 

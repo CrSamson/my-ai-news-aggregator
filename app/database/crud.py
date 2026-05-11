@@ -13,7 +13,7 @@ from sqlalchemy import func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import Article
+from app.database.models import Article, Story
 from scrapers.schemas import BlogArticle
 
 
@@ -165,13 +165,106 @@ def get_unembedded_articles(db: Session, limit: Optional[int] = None) -> list[Ar
 
 def set_article_embedding(db: Session, article_id: int, embedding) -> None:
     """Persist the embedding vector for one Article. `embedding` is a 1D
-    numpy array or list of floats of length EMBEDDING_DIM (384)."""
+    numpy array or list of floats of length EMBEDDING_DIM (1536)."""
     article = db.get(Article, article_id)
     if article is None:
         raise ValueError(f"Article id={article_id} not found")
     # pgvector accepts numpy arrays and python lists; convert to list to
     # avoid surprising the SQLAlchemy adapter on some numpy dtypes.
     article.embedding = list(embedding)
+
+
+# ===================================================================
+# Stories / clustering (Phase 4)
+# ===================================================================
+
+def get_unclustered_articles(db: Session, limit: Optional[int] = None) -> list[Article]:
+    """Return embedded Articles whose `story_id` is NULL, oldest first.
+
+    Oldest-first matters: the stateful clusterer wants the earliest
+    article to seed a story, and newer ones to optionally join it. This
+    matches the chronological behaviour of the production daily pipeline
+    where today's batch is layered on top of yesterday's stories.
+    """
+    stmt = (
+        select(Article)
+        .where(Article.story_id.is_(None))
+        .where(Article.embedding.is_not(None))
+        .order_by(Article.published_at.asc().nullsfirst())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_active_stories(db: Session, hours: int) -> list[Story]:
+    """Return stories whose `last_seen_at` is within the lookback window.
+
+    The clusterer compares each new article against this set; stories
+    that haven't seen new members in `hours` hours are considered "cold"
+    and a fresh same-topic article will spawn a new story instead of
+    extending the old one.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stmt = (
+        select(Story)
+        .where(Story.last_seen_at >= cutoff)
+        .order_by(Story.last_seen_at.desc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def create_story(
+    db: Session,
+    *,
+    centroid,
+    topics: list[str],
+    first_article: Article,
+) -> Story:
+    """Insert a new story seeded by one article. The article is updated
+    in-place to point at the new story_id; story.article_count starts
+    at 1; first_seen_at and last_seen_at are stamped from the article's
+    published_at (or now() as a fallback)."""
+    now = datetime.now(timezone.utc)
+    seen_at = first_article.published_at or now
+    story = Story(
+        centroid=list(centroid),
+        article_count=1,
+        first_seen_at=seen_at,
+        last_seen_at=seen_at,
+        topics=list(topics or []),
+    )
+    db.add(story)
+    db.flush()             # populate story.id
+    first_article.story_id = story.id
+    return story
+
+
+def assign_article_to_story(
+    db: Session,
+    *,
+    article: Article,
+    story: Story,
+    new_centroid,
+) -> None:
+    """Add `article` to `story`, bump article_count, advance last_seen_at,
+    union the topics, and overwrite the centroid with the freshly-computed
+    running mean (caller supplies it L2-normalised)."""
+    article.story_id      = story.id
+    story.centroid        = list(new_centroid)
+    story.article_count   = (story.article_count or 0) + 1
+    if article.published_at is not None and (
+        story.last_seen_at is None or article.published_at > story.last_seen_at
+    ):
+        story.last_seen_at = article.published_at
+    # Topic union (preserve order, dedupe).
+    existing = list(story.topics or [])
+    seen = set(existing)
+    for t in article.topics or []:
+        if t not in seen:
+            existing.append(t)
+            seen.add(t)
+    story.topics = existing
 
 
 # ===================================================================
