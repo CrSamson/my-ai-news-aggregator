@@ -1,18 +1,14 @@
 # AI News Aggregator
 
-> Pulls fresh AI news from **10 RSS blog sources**, **arXiv (cs.LG + cs.AI)**, **HuggingFace Daily Papers**, and **4 YouTube channels**. Stores everything in **Neon Postgres**, summarises each item with an LLM (kind-specific prompts), and emails a daily HTML digest with three sections: Articles, Papers, YouTube. Runs on **GitHub Actions** at 08:00 Montreal time, every day.
+> Pulls fresh news from **~30 RSS blog sources** spanning AI, tech, business, science, and general news. Stores everything in **Neon Postgres**, summarises each article with an LLM, and emails a daily HTML digest organised by topic. Runs on **GitHub Actions** at 08:00 Montreal time, every day.
 
 ## 🎯 Objective
 
-Keep up with AI without ad-hoc tab-checking. Every morning a GitHub Actions runner fires up, scrapes a configurable list of trusted sources for the last *N* hours, summarises new rows with GPT-4o, and ships a single HTML email so the reader can decide in seconds what to click.
+Keep up with AI without ad-hoc tab-checking. Every morning a GitHub Actions runner fires up, scrapes a configurable list of trusted sources for the last *N* hours, summarises new articles with GPT-4o, and ships a single HTML email so the reader can decide in seconds what to click.
 
-The summariser uses **two system prompts** depending on source kind:
-- **Articles + video transcripts** → busy-practitioner blurb, 2–4 sentences, specifics over generalities.
-- **Papers** → plain-English explainer for a general audience, 3–5 sentences, jargon defined inline only when load-bearing.
+The summariser produces a busy-practitioner blurb (2–4 sentences, specifics over generalities) for every new article.
 
-The pipeline is end-to-end and intentionally **single-user**: one recipient, one source list. Sources are config-driven:
-- Blog and paper sources: [config/sources.json](config/sources.json)
-- YouTube channels: [config/channels.json](config/channels.json)
+The pipeline is end-to-end and intentionally **single-user**: one recipient, one source list. Sources are config-driven in [config/sources.json](config/sources.json).
 
 Adding a new RSS blog source is a JSON edit, no scraper to write.
 
@@ -22,13 +18,13 @@ Adding a new RSS blog source is a JSON edit, no scraper to write.
 
 ```mermaid
 flowchart LR
-    Cron[GitHub Actions cron<br/>0 12 * * * UTC] --> Scrape[Step 1: Scrape<br/>10 blogs · arXiv · HF Daily · YouTube]
-    Cfg[sources.json<br/>channels.json] -.config.-> Scrape
+    Cron[GitHub Actions cron<br/>0 12 * * * UTC] --> Scrape[Step 1: Scrape<br/>~30 RSS blog sources]
+    Cfg[sources.json] -.config.-> Scrape
 
-    Scrape --> DB[(Neon Postgres<br/>articles · papers · youtube_videos)]
-    DB --> Sum[Step 2: Summarize<br/>GPT-4o, dual prompts]
+    Scrape --> DB[(Neon Postgres<br/>articles)]
+    DB --> Sum[Step 2: Summarize<br/>GPT-4o]
     Sum --> DB
-    DB --> Dig[Step 3: Digest<br/>4/4/2 balanced + per-source diversity]
+    DB --> Dig[Step 3: Digest<br/>topic-balanced + per-source diversity]
     Dig --> Mail[SMTP → inbox]
 ```
 
@@ -38,16 +34,12 @@ flowchart LR
 - **RSS / Atom parsing**: `feedparser`
 - **HTTP**: `requests`
 - **Article content extraction (optional, per-source)**: [Docling](https://github.com/docling-project/docling) — URL → markdown
-- **YouTube transcripts**: [`youtube-transcript-api`](https://github.com/jdepoix/youtube-transcript-api) — no Google API key required
-- **Validation**: Pydantic v2 (`BlogArticle`, `Paper`, `VideoMetadata`)
+- **Validation**: Pydantic v2 (`BlogArticle`)
 - **Database**: **Neon Postgres** (managed, free-tier — 500 MB / 191.9 compute-hours per month) accessed via SQLAlchemy 2.x ORM
   - Idempotent upserts via `INSERT … ON CONFLICT DO UPDATE`
   - Insert-vs-update distinguished via Postgres' `xmax = 0` trick
-  - `papers.arxiv_id` is a **partial unique index** (`WHERE arxiv_id IS NOT NULL`)
-  - `papers.sources` is a `TEXT[]` array; cross-linking uses `ARRAY(SELECT DISTINCT unnest(...))` for deduped union
-  - `summary` columns deliberately omitted from upsert SET clauses so re-scrapes never overwrite LLM output
-- **arXiv**: Atom API (`export.arxiv.org/api/query`), with a process-global ≥ 3 s rate limiter; **PDFs are never downloaded**, only `pdf_url` strings
-- **LLM summarisation**: OpenAI `gpt-4o`, kind-specific system prompts
+  - `summary` deliberately omitted from upsert SET clauses so re-scrapes never overwrite LLM output
+- **LLM summarisation**: OpenAI `gpt-4o`
 - **Email delivery**: stdlib `smtplib` + `EmailMessage` (multipart text + inline-styled HTML)
 - **Daily trigger**: **GitHub Actions cron** (`.github/workflows/digest.yml`). Secrets in repo Actions secrets. APScheduler also ships in [agent/scheduler.py](agent/scheduler.py) for in-process scheduling if you'd rather have a long-running Python process
 
@@ -55,37 +47,26 @@ flowchart LR
 
 ### Sources
 
-10 enabled blog sources in [config/sources.json](config/sources.json):
-`anthropic_news`, `anthropic_research`, `anthropic_engineering`, `openai_news`, `google_research`, `aws_ml`, `nvidia_developer`, `bair`, `cmu_ml`, `techcrunch_ai`.
-
-2 paper sources:
-`arxiv_cs_lg_ai` (Atom API, `cs.LG ∪ cs.AI`, `max_results=10`), `hf_daily_papers` (GitHub mirror primary so `hf_upvotes` populates routinely; takara.ai as fallback).
-
-4 YouTube channels in [config/channels.json](config/channels.json).
+~30 enabled blog sources in [config/sources.json](config/sources.json), spanning AI labs (Anthropic, OpenAI, Google Research, AWS ML, NVIDIA, BAIR, CMU ML), tech press (TechCrunch, Wired, The Verge, Ars Technica), business (Yahoo Finance, CNBC, Benzinga, Forbes), science (Phys.org, ScienceDaily, Quanta, Nature, MIT News), and general news (BBC, Independent, CBC, Le Monde).
 
 ### Tables (on Neon)
 
-All three tables carry `digest_sent_at TIMESTAMPTZ NULL` — the timestamp at which the row was first included in a sent digest, or `NULL` if it has never shipped. Used by the digest's no-duplicate filter (see *Digest selection* below).
+The single `articles` table carries `digest_sent_at TIMESTAMPTZ NULL` — the timestamp at which the row was first included in a sent digest, or `NULL` if it has never shipped. Used by the digest's no-duplicate filter (see *Digest selection* below).
 
-- **`articles`** — every blog/news post. Conflict key: `url`. Per-row: `source` (e.g. `anthropic_news`, `openai_news`), `title`, `published_at`, `summary` (LLM, busy-practitioner tone), `content_md` (Docling, optional), `raw_metadata` (JSONB), `digest_sent_at`.
-- **`papers`** — arXiv + HF Daily entries, cross-linked. Conflict key: `arxiv_id` (partial unique). Per-row: `sources TEXT[]` (e.g. `{arxiv,hf_daily}`), `title`, `authors` (JSONB), `abstract`, `categories` (JSONB), `pdf_url`, `hf_upvotes`, `summary` (LLM, plain-English explainer for a general audience), `digest_sent_at`.
-- **`youtube_videos`** — YouTube video metadata + transcript + LLM `summary`. Conflict key: `video_id`. Plus `digest_sent_at`.
+- **`articles`** — every blog/news post. Conflict key: `url`. Per-row: `source` (e.g. `anthropic_news`, `openai_news`), `title`, `published_at`, `summary` (LLM, busy-practitioner tone), `content_md` (trafilatura, optional), `topics` (TEXT[]), `raw_metadata` (JSONB), `digest_sent_at`.
 
 ### Digest selection
 
-`cap_balanced` (in [agent/digest.py](agent/digest.py)) takes the most-recent summarised rows in the lookback window and trims them to a hard cap (default `--max-items 10`):
+`cap_by_topic` (in [agent/digest.py](agent/digest.py)) takes the most-recent summarised articles in the lookback window and trims them to a hard cap (default `--max-items 15`):
 
-- **Quotas**: `DIGEST_QUOTAS = (0.4, 0.4, 0.2)` → 4 articles + 4 papers + 2 videos at cap=10.
-- **Per-source diversity**: `DIGEST_MAX_PER_SOURCE = 2` → no single publisher (e.g. TechCrunch) can dominate the articles section.
-- **Overflow refill**: empty quota slots refill from the other sections by recency, still respecting per-source caps. So a quiet YouTube day shifts those 2 slots to articles or papers, never wasted.
-- **No duplicate sends**: `get_recent_summarized_*` filters `WHERE digest_sent_at IS NULL`, so a row that has shipped in a previous email is never picked again. After `send_email()` returns, every included row is stamped with `digest_sent_at = NOW()` (see `mark_digest_sent` in [app/database/crud.py](app/database/crud.py)). The mark step runs **after** the SMTP call — an SMTP failure leaves the rows unsent and they get retried on the next cron. `--dry-run` skips the mark entirely. Re-scrapes never reset send state because all upserts omit `digest_sent_at` from their `SET` clauses.
+- **Topic quotas**: `--max-items` is split evenly across topic sections (5 topics → 3/3/3/3/3 at max=15), sorted by recency within each topic.
+- **Per-source diversity**: `DIGEST_MAX_PER_SOURCE = 2` → no single publisher (e.g. TechCrunch) can dominate any topic section.
+- **No duplicate sends**: `get_recent_summarized_articles` filters `WHERE digest_sent_at IS NULL`, so a row that has shipped in a previous email is never picked again. After `send_email()` returns, every included row is stamped with `digest_sent_at = NOW()` (see `mark_digest_sent` in [app/database/crud.py](app/database/crud.py)). The mark step runs **after** the SMTP call — an SMTP failure leaves the rows unsent and they get retried on the next cron. `--dry-run` skips the mark entirely. Re-scrapes never reset send state because all upserts omit `digest_sent_at` from their `SET` clauses.
 
 ### Resilience
 
 - Per-entry try/except — one bad RSS row doesn't drop the others.
 - Per-source try/except — one dead feed doesn't abort the run.
-- HF Daily auto-falls-back to its alternate feed when the primary fails.
-- arXiv volume gate: a single fetch returning >500 entries (likely misconfiguration) is logged and dropped.
 - **Idempotent re-runs**: the daily cron skips already-summarised rows. Running the pipeline twice in a day costs zero extra OpenAI tokens.
 
 ## 📁 Repository Structure
@@ -93,38 +74,30 @@ All three tables carry `digest_sent_at TIMESTAMPTZ NULL` — the timestamp at wh
 ```
 brevio-ai/
 ├── main.py                          # Manual one-shot scrape across all sources
-├── runner.py                        # Orchestrates 3 scrape steps + per-source reports
+├── runner.py                        # Orchestrates blog scraping + per-source reports
 ├── scrapers/
 │   ├── base.py                      # BaseScraper ABC
-│   ├── schemas.py                   # Pydantic v2: BlogArticle, Paper
-│   ├── rss_blog_scraper.py          # Generic RSS scraper, drives off sources.json
-│   ├── arxiv_scraper.py             # Atom API, rate-limited, no PDFs
-│   ├── hf_daily_scraper.py          # Primary + fallback, dual-shape parser
-│   └── youtube_scraper.py           # RSS + transcript + Shorts detection
+│   ├── schemas.py                   # Pydantic v2: BlogArticle
+│   └── rss_blog_scraper.py          # Generic RSS scraper, drives off sources.json
 ├── agent/
-│   ├── summarizer.py                # OpenAI gpt-4o, dual prompts (article / paper)
-│   ├── digest.py                    # 3-section HTML + plain-text email + cap_balanced
+│   ├── summarizer.py                # OpenAI gpt-4o, per-article blurbs + topic classification
+│   ├── digest.py                    # Topic-organised HTML + plain-text email + cap_by_topic
 │   └── scheduler.py                 # Pipeline driver (--once for cron, BlockingScheduler for in-process)
 ├── app/database/
 │   ├── db.py                        # Engine + session factory (reads DATABASE_URL)
-│   ├── models.py                    # SQLAlchemy: Article, Paper, YoutubeVideo
-│   ├── crud.py                      # upsert_articles / upsert_papers / merge_hf_daily_papers / ...
+│   ├── models.py                    # SQLAlchemy: Article
+│   ├── crud.py                      # upsert_articles, get_recent_summarized_articles, mark_digest_sent
 │   └── create_tables.py             # Idempotent schema init + additive ALTERs
 ├── config/
-│   ├── sources.json                 # blogs + papers config (drives the runner)
-│   └── channels.json                # YouTube channel handles
+│   └── sources.json                 # blog source config (drives the runner)
 ├── tests/
-│   ├── fixtures/                    # saved RSS / Atom snapshots
+│   ├── fixtures/                    # saved RSS snapshots
 │   ├── test_schema.py
-│   ├── test_rss_blog_scraper.py     # 4 tests
-│   ├── test_arxiv_scraper.py        # 5 tests
-│   └── test_hf_daily_scraper.py     # 5 tests, mocks HTTP fallback
+│   └── test_rss_blog_scraper.py     # fixture-driven offline tests
 ├── tools/
 │   ├── verify_feeds.py              # pre-flight feed verifier
-│   ├── migrate_to_neon.py           # one-shot local-Postgres → Neon migration
 │   ├── backfill_digest_sent.py      # one-shot: stamp existing rows as already-sent
-│   ├── phase4_check.py              # arXiv live + idempotency
-│   ├── phase5_check.py              # HF Daily live + cross-link
+│   ├── backfill_topics.py           # one-shot: stamp topic tags from source config
 │   └── phase6_check.py              # E2E backtest
 ├── .github/
 │   └── workflows/
@@ -174,8 +147,8 @@ python -m agent.scheduler --once --max-items 10 --hours 48
 # No email - render the digest to stdout
 python -m agent.digest --hours 48 --max-items 10 --dry-run
 
-# Cheaper iteration loops while tweaking the paper prompt
-python -m agent.summarizer --papers --limit 3 --force
+# Cheaper iteration loops while tweaking the article prompt
+python -m agent.summarizer --limit 3 --force
 ```
 
 ### Add or edit a source
@@ -194,20 +167,18 @@ Append to [config/sources.json](config/sources.json) under `blogs[]`:
 }
 ```
 
-Set `fetch_content: true` to pull full article markdown via Docling for that source. Set `enabled: false` to skip without removing.
+Set `fetch_content: true` to pull full article markdown via trafilatura for that source. Set `enabled: false` to skip without removing.
 
 ## 🧪 Tests
 
-Three offline test suites + a schema smoke test. Plain-runnable scripts (no pytest dependency):
+Offline test suites + a schema smoke test. Plain-runnable scripts (no pytest dependency):
 
 ```bash
 python tests/test_schema.py                 # DB tables + indices
-python tests/test_rss_blog_scraper.py       # 4 tests, fixture-driven
-python tests/test_arxiv_scraper.py          # 5 tests
-python tests/test_hf_daily_scraper.py       # 5 tests, mocked HTTP fallback
+python tests/test_rss_blog_scraper.py       # fixture-driven
 ```
 
-The fixtures under [tests/fixtures/](tests/fixtures/) are real saved RSS / Atom responses; tests work fully offline.
+The fixtures under [tests/fixtures/](tests/fixtures/) are real saved RSS responses; tests work fully offline.
 
 For runtime/DB checks, [tools/phase6_check.py](tools/phase6_check.py) runs the full Runner with `hours=72`, asserts per-source minimums, and verifies idempotency on a second run.
 
@@ -266,23 +237,19 @@ If you flip `fetch_content: true` for blog sources, daily growth jumps to ~1 MB 
 
 What this **isn't**, by design and by current state:
 
-**Single-tenant.** One global `DIGEST_TO`, one global source list. No user table, no auth, no per-user preferences. To change channels: edit [config/channels.json](config/channels.json) or [config/sources.json](config/sources.json).
+**Single-tenant.** One global `DIGEST_TO`, one global source list. No user table, no auth, no per-user preferences. To change sources: edit [config/sources.json](config/sources.json).
 
 **No retry/backoff on OpenAI rate limits.** A failed summary row is logged and stays unsummarised; the next pipeline run picks it up. No exponential backoff inside a single run.
 
-**Long-source truncation is silent.** The summariser trims source text to 40k chars before the API call (see `MAX_SOURCE_CHARS` in [agent/summarizer.py](agent/summarizer.py)). Long arXiv abstracts or full-content blog articles can lose their tail.
+**Long-source truncation is silent.** The summariser trims source text to 40k chars before the API call (see `MAX_SOURCE_CHARS` in [agent/summarizer.py](agent/summarizer.py)). Long full-content blog articles can lose their tail.
 
-**No relevance ranking or cross-feed dedup.** A single AI announcement can ship as a card from `anthropic_news`, another from `techcrunch_ai`, and again from `openai_news` if everyone covers it. arXiv and HF Daily *are* deduplicated against each other via `arxiv_id` (rows merge their `sources` arrays).
-
-**`hf_daily` runs against the GitHub mirror as primary** so `hf_upvotes` (and `authors`) populate routinely. Trade-off: 22 entries/day vs takara.ai's 50. The takara.ai feed is wired as the fallback.
+**No relevance ranking or cross-feed dedup.** A single AI announcement can ship as a card from `anthropic_news`, another from `techcrunch_ai`, and again from `openai_news` if everyone covers it. (Story-level cross-source deduplication via embedding + clustering is the next architecture step — see the project plan.)
 
 **`cmu_ml` and `bair` regularly publish less than once per week.** Don't treat zero-fetched runs from those sources as failures.
 
 **DST drift.** GitHub Actions cron is UTC-only. The daily fire is 08:00 in summer, 07:00 in winter. Acceptable for a personal digest; not acceptable if you ever need precise Montreal-local timing.
 
 Other gotchas:
-- **YouTube transcript scraping is fragile.** `youtube-transcript-api` can be rate-limited or blocked; `RequestBlocked` is caught and logged but the video is stored with an empty transcript.
-- **Channel-handle resolution depends on YouTube HTML.** Four fallback regex strategies cover the common cases, but a layout change upstream would break it.
 - **Anthropic feed source.** Feeds come from [Olshansk/rss-feeds](https://github.com/Olshansk/rss-feeds) on GitHub, not from Anthropic directly — freshness depends on that repo being maintained.
 - **TechCrunch may Cloudflare-block** with a 403 from the runtime UA. Per-source try/except catches it; re-running usually succeeds.
 - **Per-source title cleanup.** Anthropic feed titles arrive prefixed with date + category by the Olshansk mirror; `agent/digest.py:_article_title` strips that prefix only for sources whose id starts with `anthropic_`. A new upstream category leaks through unstripped.

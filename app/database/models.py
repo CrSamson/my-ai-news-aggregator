@@ -2,11 +2,9 @@
 app/database/models.py — SQLAlchemy ORM models.
 
 Tables:
-  • Article       — any blog/news post from any source. Conflict key: url.
-  • Paper         — arXiv / HF Daily Papers entries. Conflict key: arxiv_id
-                    (partial unique index, with url unique as fallback).
-  • YoutubeVideo  — YouTube video metadata + transcript.
-                    Conflict key: video_id.
+  • Article — any blog/news post from any source. Conflict key: url.
+  • Story   — a cluster of related articles covering the same news event.
+              Built by agent/clusterer.py from article embeddings.
 """
 
 from sqlalchemy import (
@@ -14,8 +12,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
-    Index,
-    Integer,
+    ForeignKey,
     String,
     Text,
     func,
@@ -23,43 +20,16 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import declarative_base
+from pgvector.sqlalchemy import Vector
 
 Base = declarative_base()
 
 
-class YoutubeVideo(Base):
-    """
-    Stores YouTube video metadata + transcript from every configured channel.
-
-    Unique key: video_id  (YouTube's 11-char video identifier)
-    """
-
-    __tablename__ = "youtube_videos"
-
-    id             = Column(BigInteger, primary_key=True, autoincrement=True)
-
-    # --- scraper fields (VideoMetadata.model_dump) ---
-    title          = Column(String(512),  nullable=False)
-    video_id       = Column(String(32),   nullable=False, unique=True)  # conflict key
-    url            = Column(String(2048), nullable=False)
-    published_at   = Column(DateTime(timezone=True), nullable=False)
-    description    = Column(Text,         nullable=False, default="")
-
-    # --- fields added by runner.py ---
-    channel_handle = Column(String(256),  nullable=False, default="")   # e.g. "@Fireship"
-    transcript     = Column(Text,         nullable=False, default="")
-    summary        = Column(Text,         nullable=False, default="")   # LLM-generated per-row summary
-
-    # NULL = not yet included in a sent digest. Set to NOW() once an email
-    # containing this row goes out successfully. Filtered by the digest queries
-    # so the same row never ships in two emails.
-    digest_sent_at = Column(DateTime(timezone=True), nullable=True)
-
-    # --- housekeeping ---
-    created_at     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    def __repr__(self) -> str:
-        return f"<YoutubeVideo id={self.id} video_id={self.video_id!r} title={self.title!r}>"
+# Embedding dimensionality. Matches OpenAI text-embedding-3-small.
+# If you swap to a different model with a different dim, change this
+# constant AND add a migration entry to create_tables._MIGRATED_COLUMNS
+# so existing rows get re-embedded.
+EMBEDDING_DIM: int = 1536
 
 
 class Article(Base):
@@ -86,8 +56,29 @@ class Article(Base):
     content_fetched = Column(Boolean,     nullable=False,
                              default=False, server_default=text("false"))
 
-    # NULL = not yet included in a sent digest. See YoutubeVideo.digest_sent_at.
+    # NULL = not yet included in a sent digest. Set to NOW() once an email
+    # containing this row goes out successfully. Filtered by the digest queries
+    # so the same row never ships in two emails.
     digest_sent_at  = Column(DateTime(timezone=True), nullable=True)
+
+    # Topic tags inherited from sources.json config (e.g. ["ai", "technology"]).
+    # Populated at insert time; refreshed on conflict so config edits propagate.
+    topics          = Column(ARRAY(String), nullable=False,
+                             server_default=text("ARRAY[]::varchar[]"))
+
+    # 1536-dim OpenAI text-embedding-3-small of (title + content[:500]).
+    # NULL until agent/embedder.py runs. L2-normalised so cosine similarity
+    # equals the inner product. Indexed with HNSW + vector_cosine_ops for
+    # nearest-neighbour story-clustering lookups (Phase 4).
+    embedding       = Column(Vector(EMBEDDING_DIM), nullable=True)
+
+    # FK into stories.id. NULL until agent/clusterer.py runs. ON DELETE
+    # SET NULL so deleting a story (rare) doesn't cascade-delete its
+    # member articles; they become unclustered again and the next runner
+    # pass will reassign them.
+    story_id        = Column(BigInteger,
+                             ForeignKey("stories.id", ondelete="SET NULL"),
+                             nullable=True, index=True)
 
     # Original feedparser entry, kept verbatim so we don't lose anything.
     raw_metadata    = Column(JSONB,       nullable=False,
@@ -103,60 +94,69 @@ class Article(Base):
         return f"<Article id={self.id} source={self.source!r} title={self.title!r}>"
 
 
-class Paper(Base):
+class Story(Base):
     """
-    arXiv / HuggingFace Daily Papers entries.
+    A cluster of related articles covering the same news event.
 
-    Conflict key: `arxiv_id` (unique partial — only enforced when not NULL).
-    `url` is also unique as a fallback for non-arXiv entries.
-    `sources` is an array so a single row can be tagged with multiple
-    discoveries, e.g. {'arxiv'}, {'arxiv','hf_daily'}.
+    Built by agent/clusterer.py from L2-normalised article embeddings via
+    greedy single-pass clustering with running-mean centroids (cosine
+    threshold 0.65, see experimentation/clustering_backtest.py for the
+    backtest that set the threshold).
+
+    `centroid` is the L2-normalised running mean of every member
+    article's embedding — cosine similarity to the centroid equals the
+    inner product. HNSW-indexed so the clusterer can look up the nearest
+    active stories in O(log n) when assigning a new article.
+
+    `synthesis*` columns are populated by Phase 5 (story-level LLM
+    summarisation). They stay NULL through Phase 4.
     """
 
-    __tablename__ = "papers"
+    __tablename__ = "stories"
 
-    id                = Column(BigInteger, primary_key=True, autoincrement=True)
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    sources           = Column(ARRAY(String), nullable=False,
-                               server_default=text("ARRAY[]::varchar[]"))
-    arxiv_id          = Column(String(32),  nullable=True)               # e.g. "2401.12345"
-    url               = Column(Text,        nullable=False, unique=True)
-    pdf_url           = Column(Text,        nullable=True)
+    # Running-mean centroid, L2-normalised after every member join.
+    centroid        = Column(Vector(EMBEDDING_DIM), nullable=False)
+    article_count   = Column(BigInteger, nullable=False,
+                             server_default=text("0"))
 
-    title             = Column(Text,        nullable=False)
-    authors           = Column(JSONB,       nullable=False,
-                               default=list, server_default=text("'[]'::jsonb"))
-    abstract          = Column(Text,        nullable=True)
-    categories        = Column(JSONB,       nullable=False,
-                               default=list, server_default=text("'[]'::jsonb"))
+    # Stamped to first member's published_at on creation, never moves.
+    first_seen_at   = Column(DateTime(timezone=True), nullable=False)
+    # Bumped to the joining member's published_at every time a new article
+    # joins. The clusterer filters active stories on last_seen_at >= cutoff
+    # so stories older than the lookback window can't accumulate new
+    # members (a fresh same-topic event spawns a new story instead).
+    last_seen_at    = Column(DateTime(timezone=True), nullable=False, index=True)
 
-    published_at      = Column(DateTime(timezone=True), nullable=True, index=True)
-    updated_at_arxiv  = Column(DateTime(timezone=True), nullable=True)
-    hf_upvotes        = Column(Integer,     nullable=True)
+    # Union of member articles' topics. Refreshed on every join.
+    topics          = Column(ARRAY(String), nullable=False,
+                             server_default=text("ARRAY[]::varchar[]"))
 
-    summary           = Column(Text,        nullable=True)              # LLM-generated, set later
+    # ------------------------------------------------------------------
+    # Phase 5: story-level LLM synthesis. NULL until story_summarizer runs.
+    # ------------------------------------------------------------------
+    # JSON blob with the StorySummary fields (headline / summary / key_points
+    # / entities / model / tokens / etc.). One row per story; re-synthesised
+    # only when the member set changes (detected via synthesis_hash).
+    synthesis       = Column(JSONB,       nullable=True)
+    synthesis_model = Column(Text,        nullable=True)   # audit
+    synthesis_at    = Column(DateTime(timezone=True), nullable=True)
+    # sha256 of sorted member URLs at synthesis time. Used by the cache
+    # check: if recomputed hash != stored hash, members have changed and
+    # the story needs re-synthesis.
+    synthesis_hash  = Column(Text,        nullable=True)
 
-    # NULL = not yet included in a sent digest. See YoutubeVideo.digest_sent_at.
-    digest_sent_at    = Column(DateTime(timezone=True), nullable=True)
+    # Stamped once the story ships in a digest. Filtered by the digest
+    # query so the same story can't be emailed twice.
+    digest_sent_at  = Column(DateTime(timezone=True), nullable=True)
 
-    raw_metadata      = Column(JSONB,       nullable=False,
-                               default=dict, server_default=text("'{}'::jsonb"))
-
-    created_at        = Column(DateTime(timezone=True),
-                               server_default=func.now(), nullable=False)
-    updated_at        = Column(DateTime(timezone=True),
-                               server_default=func.now(), onupdate=func.now(),
-                               nullable=False)
-
-    __table_args__ = (
-        # Unique only where arxiv_id is set — non-arXiv rows can coexist with NULLs.
-        Index(
-            "ix_papers_arxiv_id_unique",
-            "arxiv_id",
-            unique=True,
-            postgresql_where=text("arxiv_id IS NOT NULL"),
-        ),
-    )
+    created_at      = Column(DateTime(timezone=True),
+                             server_default=func.now(), nullable=False)
+    updated_at      = Column(DateTime(timezone=True),
+                             server_default=func.now(), onupdate=func.now(),
+                             nullable=False)
 
     def __repr__(self) -> str:
-        return f"<Paper id={self.id} arxiv_id={self.arxiv_id!r} title={self.title!r}>"
+        return (f"<Story id={self.id} article_count={self.article_count} "
+                f"last_seen_at={self.last_seen_at!s}>")

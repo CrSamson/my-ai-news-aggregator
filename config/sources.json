@@ -1,5 +1,5 @@
 {
-  "_comment": "Driver config for the multi-source aggregator. blogs[] is consumed by RssBlogScraper; papers[] is consumed by the arxiv + hf_daily scrapers (Phases 4-5). To disable a source, set enabled=false. To pull full article markdown via Docling for a source, set fetch_content=true.",
+  "_comment": "Driver config for the RSS blog aggregator. blogs[] is consumed by RssBlogScraper. Set fetch_content=true to pull full article markdown via trafilatura. `topics` is the list of topic tags every item from this source inherits. fetch_content decisions follow the Phase 3a A/B matrix: enabled for sources with thin RSS (<100 char body), disabled where RSS is adequate or trafilatura is known to truncate (Wired, The Verge).",
 
   "blogs": [
     {
@@ -7,27 +7,30 @@
       "name": "Anthropic - News",
       "type": "rss",
       "feed_url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml",
-      "fetch_content": false,
+      "fetch_content": true,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai"]
     },
     {
       "id": "anthropic_research",
       "name": "Anthropic - Research",
       "type": "rss",
       "feed_url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_research.xml",
-      "fetch_content": false,
+      "fetch_content": true,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai"]
     },
     {
       "id": "anthropic_engineering",
       "name": "Anthropic - Engineering",
       "type": "rss",
       "feed_url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_engineering.xml",
-      "fetch_content": false,
+      "fetch_content": true,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "technology"]
     },
     {
       "id": "openai_news",
@@ -36,7 +39,8 @@
       "feed_url": "https://openai.com/news/rss.xml",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai"]
     },
     {
       "id": "google_research",
@@ -45,7 +49,8 @@
       "feed_url": "https://research.google/blog/rss/",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "technology"]
     },
     {
       "id": "aws_ml",
@@ -54,7 +59,8 @@
       "feed_url": "https://aws.amazon.com/blogs/machine-learning/feed/",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "technology"]
     },
     {
       "id": "nvidia_developer",
@@ -63,7 +69,8 @@
       "feed_url": "https://developer.nvidia.com/blog/feed/",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "technology"]
     },
     {
       "id": "bair",
@@ -72,7 +79,8 @@
       "feed_url": "https://bair.berkeley.edu/blog/feed.xml",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "science"]
     },
     {
       "id": "cmu_ml",
@@ -81,7 +89,8 @@
       "feed_url": "https://blog.ml.cmu.edu/feed/",
       "fetch_content": false,
       "enabled": true,
-      "fragile": false
+      "fragile": false,
+      "topics": ["ai", "science"]
     },
     {
       "id": "techcrunch_ai",
@@ -90,28 +99,198 @@
       "feed_url": "https://techcrunch.com/category/artificial-intelligence/feed/",
       "fetch_content": false,
       "enabled": true,
-      "fragile": true
-    }
-  ],
+      "fragile": true,
+      "topics": ["ai", "technology"]
+    },
 
-  "papers": [
     {
-      "id": "arxiv_cs_lg_ai",
-      "name": "arXiv cs.LG + cs.AI",
-      "type": "arxiv",
-      "categories": ["cs.LG", "cs.AI"],
-      "max_results": 10,
-      "keyword_filter": null,
-      "enabled": true
+      "id": "wired",
+      "name": "Wired",
+      "type": "rss",
+      "feed_url": "https://www.wired.com/feed/rss",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["technology"],
+      "_blocklist_note": "Wired's main feed includes templated coupon/promo listicles (e.g. 'Surfshark Coupon', 'Sony Promo Code', 'VistaPrint Coupon Code') that all share a near-identical title format and false-merge into a single 21-article cluster on MiniLM embeddings. Filtered at scrape time so they never reach the embedding step.",
+      "url_blocklist": [
+        "(coupon|promo-code)"
+      ]
     },
     {
-      "id": "hf_daily_papers",
-      "name": "Hugging Face Daily Papers",
-      "type": "hf_daily",
-      "feed_url": "https://raw.githubusercontent.com/huangboming/huggingface-daily-paper-feed/main/feed.xml",
-      "fallback_feed_url": "https://papers.takara.ai/api/feed",
+      "id": "the_verge",
+      "name": "The Verge",
+      "type": "rss",
+      "feed_url": "https://www.theverge.com/rss/index.xml",
+      "fetch_content": false,
       "enabled": true,
-      "fragile": true
+      "fragile": false,
+      "topics": ["technology"]
+    },
+    {
+      "id": "ars_technica",
+      "name": "Ars Technica",
+      "type": "rss",
+      "feed_url": "http://feeds.arstechnica.com/arstechnica/index",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["technology"]
+    },
+
+    {
+      "id": "yahoo_finance",
+      "name": "Yahoo Finance",
+      "type": "rss",
+      "feed_url": "https://finance.yahoo.com/news/rssindex",
+      "fetch_content": true,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["business"]
+    },
+    {
+      "id": "cnbc",
+      "name": "CNBC",
+      "type": "rss",
+      "feed_url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+      "fetch_content": true,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["business"]
+    },
+    {
+      "id": "benzinga",
+      "name": "Benzinga",
+      "type": "rss",
+      "feed_url": "https://www.benzinga.com/feed",
+      "fetch_content": false,
+      "enabled": false,
+      "_disabled_reason": "Feed is 100% templated 'X Price Prediction: 2025, 2026, 2030' crypto pages — not news. False-merges everything into one cluster on MiniLM. Disabled 2026-05-05 during Phase 4 backtest.",
+      "fragile": false,
+      "topics": ["business"]
+    },
+    {
+      "id": "insider_monkey",
+      "name": "Insider Monkey",
+      "type": "rss",
+      "feed_url": "https://www.insidermonkey.com/blog/feed/",
+      "fetch_content": false,
+      "enabled": false,
+      "_disabled_reason": "Feed is 100% raw Q1 earnings call transcripts — not news. False-merges via title template 'X Q1 2026 Earnings Call Transcript'. Disabled 2026-05-05 during Phase 4 backtest.",
+      "fragile": false,
+      "topics": ["business"]
+    },
+    {
+      "id": "forbes_business",
+      "name": "Forbes - Business",
+      "type": "rss",
+      "feed_url": "https://www.forbes.com/business/feed/",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": true,
+      "topics": ["business"]
+    },
+
+    {
+      "id": "phys_org",
+      "name": "Phys.org",
+      "type": "rss",
+      "feed_url": "https://phys.org/rss-feed/",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science"]
+    },
+    {
+      "id": "sciencedaily",
+      "name": "ScienceDaily",
+      "type": "rss",
+      "feed_url": "https://www.sciencedaily.com/rss/all.xml",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science"]
+    },
+    {
+      "id": "quanta",
+      "name": "Quanta Magazine",
+      "type": "rss",
+      "feed_url": "https://api.quantamagazine.org/feed/",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science"]
+    },
+    {
+      "id": "nature",
+      "name": "Nature News",
+      "type": "rss",
+      "feed_url": "https://www.nature.com/nature.rss",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science"]
+    },
+    {
+      "id": "mit_news",
+      "name": "MIT News",
+      "type": "rss",
+      "feed_url": "https://news.mit.edu/rss/feed",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science"]
+    },
+    {
+      "id": "air_space_forces",
+      "name": "Air & Space Forces Magazine",
+      "type": "rss",
+      "feed_url": "https://www.airandspaceforces.com/feed/",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["science", "technology"]
+    },
+
+    {
+      "id": "bbc_news",
+      "name": "BBC News",
+      "type": "rss",
+      "feed_url": "http://feeds.bbci.co.uk/news/rss.xml",
+      "fetch_content": true,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["general"]
+    },
+    {
+      "id": "the_independent",
+      "name": "The Independent",
+      "type": "rss",
+      "feed_url": "https://www.independent.co.uk/news/rss",
+      "fetch_content": false,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["general"]
+    },
+    {
+      "id": "cbc_news",
+      "name": "CBC News",
+      "type": "rss",
+      "feed_url": "https://rss.cbc.ca/lineup/topstories.xml",
+      "fetch_content": true,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["general"]
+    },
+    {
+      "id": "cna",
+      "name": "Channel News Asia",
+      "type": "rss",
+      "feed_url": "https://www.channelnewsasia.com/rssfeeds/8395986",
+      "fetch_content": true,
+      "enabled": true,
+      "fragile": false,
+      "topics": ["general"]
     }
   ]
 }

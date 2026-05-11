@@ -2,7 +2,7 @@
 app/database/crud.py — Single CRUD interface for all database operations.
 
 Uses PostgreSQL ON CONFLICT … DO UPDATE (upsert) so scrapers can safely
-re-insert the same article or video without duplicates.
+re-insert the same article without duplicates.
 """
 
 import logging
@@ -13,8 +13,8 @@ from sqlalchemy import func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import Article, Paper, YoutubeVideo
-from scrapers.schemas import BlogArticle, Paper as PaperItem
+from app.database.models import Article, Story
+from scrapers.schemas import BlogArticle
 
 
 log = logging.getLogger(__name__)
@@ -34,96 +34,7 @@ def _digest_cutoff(hours: int) -> datetime:
 
 
 # ===================================================================
-# YouTube Videos
-# ===================================================================
-
-def upsert_youtube_video(db: Session, data: dict) -> YoutubeVideo:
-    """
-    Insert or update a single YouTube video (conflict key: video_id).
-
-    `data` is the dict produced by runner._scrape_youtube() which contains
-    scraper fields + "channel" (mapped to channel_handle) + "transcript".
-    """
-    values = {
-        "title":          data["title"],
-        "video_id":       data["video_id"],
-        "url":            str(data["url"]),
-        "published_at":   data["published_at"],
-        "description":    data.get("description", ""),
-        "channel_handle": data.get("channel", data.get("channel_handle", "")),
-        "transcript":     data.get("transcript", ""),
-    }
-
-    stmt = (
-        pg_insert(YoutubeVideo)
-        .values(**values)
-        .on_conflict_do_update(
-            index_elements=["video_id"],
-            set_={
-                "title":          values["title"],
-                "description":    values["description"],
-                "channel_handle": values["channel_handle"],
-                "transcript":     values["transcript"],
-            },
-        )
-        .returning(YoutubeVideo)
-    )
-
-    row = db.execute(stmt).scalars().first()
-    return row
-
-
-def upsert_youtube_videos(db: Session, videos: list[dict]) -> list[YoutubeVideo]:
-    """Upsert a batch of YouTube videos. Returns the list of ORM objects."""
-    rows = []
-    for video in videos:
-        rows.append(upsert_youtube_video(db, video))
-    db.flush()
-    return rows
-
-
-def get_all_youtube_videos(db: Session) -> list[YoutubeVideo]:
-    """Return all YouTube videos, newest first."""
-    stmt = select(YoutubeVideo).order_by(YoutubeVideo.published_at.desc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def get_unsummarized_youtube_videos(db: Session, limit: Optional[int] = None) -> list[YoutubeVideo]:
-    """Return YouTube videos whose `summary` is empty, newest first."""
-    stmt = (
-        select(YoutubeVideo)
-        .where(YoutubeVideo.summary == "")
-        .order_by(YoutubeVideo.published_at.desc())
-    )
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return list(db.execute(stmt).scalars().all())
-
-
-def set_youtube_summary(db: Session, video_id: int, summary: str) -> None:
-    """Persist a generated summary for one YouTube video."""
-    video = db.get(YoutubeVideo, video_id)
-    if video is None:
-        raise ValueError(f"YoutubeVideo id={video_id} not found")
-    video.summary = summary
-
-
-def get_recent_summarized_youtube_videos(db: Session, hours: int) -> list[YoutubeVideo]:
-    """Return YouTube videos published in the last `hours` hours that have a
-    non-empty summary AND have not already been included in a sent digest."""
-    cutoff = _digest_cutoff(hours)
-    stmt = (
-        select(YoutubeVideo)
-        .where(YoutubeVideo.summary != "")
-        .where(YoutubeVideo.published_at >= cutoff)
-        .where(YoutubeVideo.digest_sent_at.is_(None))
-        .order_by(YoutubeVideo.published_at.desc())
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
-# ===================================================================
-# Generalized Articles (multi-source plan, Phase 2)
+# Articles
 # ===================================================================
 
 def upsert_articles(db: Session, items: list[BlogArticle]) -> dict:
@@ -152,6 +63,7 @@ def upsert_articles(db: Session, items: list[BlogArticle]) -> dict:
             "summary"        : item.summary,           # always None at scrape time
             "content_md"     : item.content_md,
             "content_fetched": item.content_fetched,
+            "topics"         : item.topics,
             "raw_metadata"   : item.raw_metadata or {},
         }
 
@@ -166,6 +78,9 @@ def upsert_articles(db: Session, items: list[BlogArticle]) -> dict:
                     "published_at"   : values["published_at"],
                     "content_md"     : values["content_md"],
                     "content_fetched": values["content_fetched"],
+                    # Articles have one source -> overwrite topics with the
+                    # latest source-config tags so config edits propagate.
+                    "topics"         : values["topics"],
                     "raw_metadata"   : values["raw_metadata"],
                     # summary intentionally omitted - preserve LLM output
                     "updated_at"     : func.now(),
@@ -201,12 +116,20 @@ def get_unsummarized_articles(db: Session, limit: Optional[int] = None) -> list[
     return list(db.execute(stmt).scalars().all())
 
 
-def set_article_summary(db: Session, article_id: int, summary: str) -> None:
-    """Persist a generated summary for one Article."""
+def set_article_summary(
+    db: Session,
+    article_id: int,
+    summary: str,
+    topics: list[str] | None = None,
+) -> None:
+    """Persist a generated summary for one Article. If `topics` is provided
+    (LLM-classified), it overwrites the source-declared tags."""
     article = db.get(Article, article_id)
     if article is None:
         raise ValueError(f"Article id={article_id} not found")
     article.summary = summary
+    if topics is not None:
+        article.topics = topics
 
 
 def get_recent_summarized_articles(db: Session, hours: int) -> list[Article]:
@@ -225,221 +148,127 @@ def get_recent_summarized_articles(db: Session, hours: int) -> list[Article]:
 
 
 # ===================================================================
-# Generalized Papers (multi-source plan, Phase 4)
+# Embeddings (Phase 3)
 # ===================================================================
 
-# Postgres expression: dedup the union of two text arrays.
-# Used in upsert_papers' ON CONFLICT SET clause to merge `sources`.
-_SOURCES_UNION = text(
-    "ARRAY(SELECT DISTINCT unnest(papers.sources || EXCLUDED.sources))"
-)
-
-
-def upsert_papers(db: Session, items: list[PaperItem]) -> dict:
-    """
-    Upsert a batch of Paper items (conflict key: arxiv_id).
-
-    Returns {"inserted": N, "updated": N, "total": N, "skipped": N}.
-
-    On conflict (matching arxiv_id), this:
-      - Merges `sources` arrays via DISTINCT unnest (so a Phase-5 HF Daily
-        ingestion appends 'hf_daily' to an existing arxiv-only row).
-      - Keeps the existing `hf_upvotes` if the new row's value is NULL
-        (so an arxiv-only re-scrape never blanks an HF count).
-      - Refreshes title / authors / abstract / categories / pdf_url /
-        published_at / updated_at_arxiv from the new payload.
-
-    Items with `arxiv_id is None` are logged and skipped. The plan §4.1
-    allows a URL-fallback conflict path; that's deferred until we
-    actually have a non-arxiv paper source.
-
-    Insert vs update is detected via Postgres' xmax trick:
-        xmax = 0  -> row was just inserted
-        xmax != 0 -> row already existed and ON CONFLICT fired
-    """
-    inserted = 0
-    updated  = 0
-    skipped  = 0
-
-    for item in items:
-        if item.arxiv_id is None:
-            log.warning("[upsert_papers] item has no arxiv_id; skipping url=%s", item.url)
-            skipped += 1
-            continue
-
-        values = {
-            "sources"         : item.sources,
-            "arxiv_id"        : item.arxiv_id,
-            "url"             : item.url,
-            "pdf_url"         : item.pdf_url,
-            "title"           : item.title,
-            "authors"         : item.authors,
-            "abstract"        : item.abstract,
-            "categories"      : item.categories,
-            "published_at"    : item.published_at,
-            "updated_at_arxiv": item.updated_at_arxiv,
-            "hf_upvotes"      : item.hf_upvotes,
-            "raw_metadata"    : item.raw_metadata or {},
-        }
-
-        stmt = pg_insert(Paper).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["arxiv_id"],
-            index_where=text("arxiv_id IS NOT NULL"),  # match the partial index
-            set_={
-                "sources"         : _SOURCES_UNION,
-                "title"           : stmt.excluded.title,
-                "authors"         : stmt.excluded.authors,
-                "abstract"        : stmt.excluded.abstract,
-                "categories"      : stmt.excluded.categories,
-                "pdf_url"         : stmt.excluded.pdf_url,
-                "published_at"    : stmt.excluded.published_at,
-                "updated_at_arxiv": stmt.excluded.updated_at_arxiv,
-                # Keep existing hf_upvotes if the new row didn't provide one.
-                "hf_upvotes"      : func.coalesce(
-                    stmt.excluded.hf_upvotes, Paper.hf_upvotes
-                ),
-                "updated_at"      : func.now(),
-            },
-        ).returning(literal_column("(xmax = 0)").label("was_inserted"))
-
-        was_inserted = db.execute(stmt).scalar()
-        if was_inserted:
-            inserted += 1
-        else:
-            updated += 1
-
-    db.flush()
-    return {
-        "inserted": inserted,
-        "updated":  updated,
-        "total":    inserted + updated,
-        "skipped":  skipped,
-    }
-
-
-def merge_hf_daily_papers(db: Session, items: list[PaperItem]) -> dict:
-    """
-    Merge HuggingFace Daily Papers entries into the papers table (Phase 5).
-
-    Returns {"inserted": N, "updated": N, "total": N, "skipped": N}.
-
-    Semantics — different from upsert_papers on purpose:
-
-      INSERT (no existing row with this arxiv_id):
-        Use HF's data as-is. arxiv-quality data may overwrite later when
-        ArxivScraper covers the same paper.
-
-      UPDATE (row already exists, e.g. ingested by ArxivScraper):
-        - sources:    array union (so {'arxiv'} -> {'arxiv','hf_daily'})
-        - hf_upvotes: COALESCE(new, existing)  -> set if new is non-null,
-                       keep existing otherwise
-        - updated_at: refresh
-        title / authors / abstract / categories / pdf_url / published_at /
-        updated_at_arxiv are LEFT ALONE so we don't clobber the arXiv-
-        sourced versions with HF's potentially weaker text.
-
-    Items with `arxiv_id is None` are logged and skipped.
-    """
-    inserted = 0
-    updated  = 0
-    skipped  = 0
-
-    for item in items:
-        if item.arxiv_id is None:
-            log.warning(
-                "[merge_hf_daily_papers] item has no arxiv_id; skipping url=%s",
-                item.url,
-            )
-            skipped += 1
-            continue
-
-        values = {
-            "sources"         : item.sources,
-            "arxiv_id"        : item.arxiv_id,
-            "url"             : item.url,
-            "pdf_url"         : item.pdf_url,
-            "title"           : item.title,
-            "authors"         : item.authors,
-            "abstract"        : item.abstract,
-            "categories"      : item.categories,
-            "published_at"    : item.published_at,
-            "updated_at_arxiv": item.updated_at_arxiv,
-            "hf_upvotes"      : item.hf_upvotes,
-            "raw_metadata"    : item.raw_metadata or {},
-        }
-
-        stmt = pg_insert(Paper).values(**values)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["arxiv_id"],
-            index_where=text("arxiv_id IS NOT NULL"),
-            set_={
-                "sources"   : _SOURCES_UNION,
-                "hf_upvotes": func.coalesce(
-                    stmt.excluded.hf_upvotes, Paper.hf_upvotes
-                ),
-                "updated_at": func.now(),
-            },
-        ).returning(literal_column("(xmax = 0)").label("was_inserted"))
-
-        was_inserted = db.execute(stmt).scalar()
-        if was_inserted:
-            inserted += 1
-        else:
-            updated += 1
-
-    db.flush()
-    return {
-        "inserted": inserted,
-        "updated":  updated,
-        "total":    inserted + updated,
-        "skipped":  skipped,
-    }
-
-
-def get_all_papers(db: Session) -> list[Paper]:
-    """Return all Papers, newest first."""
-    stmt = select(Paper).order_by(Paper.published_at.desc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def get_unsummarized_papers(db: Session, limit: Optional[int] = None) -> list[Paper]:
-    """Return Papers whose summary is NULL or empty, newest first."""
+def get_unembedded_articles(db: Session, limit: Optional[int] = None) -> list[Article]:
+    """Return Articles whose `embedding` column is NULL, newest first."""
     stmt = (
-        select(Paper)
-        .where(or_(Paper.summary.is_(None), Paper.summary == ""))
-        .order_by(Paper.published_at.desc())
+        select(Article)
+        .where(Article.embedding.is_(None))
+        .order_by(Article.published_at.desc().nullslast())
     )
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(db.execute(stmt).scalars().all())
 
 
-def set_paper_summary(db: Session, paper_id: int, summary: str) -> None:
-    """Persist a generated summary for one Paper."""
-    paper = db.get(Paper, paper_id)
-    if paper is None:
-        raise ValueError(f"Paper id={paper_id} not found")
-    paper.summary = summary
+def set_article_embedding(db: Session, article_id: int, embedding) -> None:
+    """Persist the embedding vector for one Article. `embedding` is a 1D
+    numpy array or list of floats of length EMBEDDING_DIM (1536)."""
+    article = db.get(Article, article_id)
+    if article is None:
+        raise ValueError(f"Article id={article_id} not found")
+    # pgvector accepts numpy arrays and python lists; convert to list to
+    # avoid surprising the SQLAlchemy adapter on some numpy dtypes.
+    article.embedding = list(embedding)
 
 
-def get_recent_summarized_papers(db: Session, hours: int) -> list[Paper]:
-    """Return Papers published in the last `hours` hours that have a non-empty
-    summary AND have not already been included in a sent digest."""
-    cutoff = _digest_cutoff(hours)
+# ===================================================================
+# Stories / clustering (Phase 4)
+# ===================================================================
+
+def get_unclustered_articles(db: Session, limit: Optional[int] = None) -> list[Article]:
+    """Return embedded Articles whose `story_id` is NULL, oldest first.
+
+    Oldest-first matters: the stateful clusterer wants the earliest
+    article to seed a story, and newer ones to optionally join it. This
+    matches the chronological behaviour of the production daily pipeline
+    where today's batch is layered on top of yesterday's stories.
+    """
     stmt = (
-        select(Paper)
-        .where(Paper.summary.isnot(None))
-        .where(Paper.summary != "")
-        .where(Paper.published_at >= cutoff)
-        .where(Paper.digest_sent_at.is_(None))
-        .order_by(Paper.published_at.desc())
+        select(Article)
+        .where(Article.story_id.is_(None))
+        .where(Article.embedding.is_not(None))
+        .order_by(Article.published_at.asc().nullsfirst())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_active_stories(db: Session, hours: int) -> list[Story]:
+    """Return stories whose `last_seen_at` is within the lookback window.
+
+    The clusterer compares each new article against this set; stories
+    that haven't seen new members in `hours` hours are considered "cold"
+    and a fresh same-topic article will spawn a new story instead of
+    extending the old one.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stmt = (
+        select(Story)
+        .where(Story.last_seen_at >= cutoff)
+        .order_by(Story.last_seen_at.desc())
     )
     return list(db.execute(stmt).scalars().all())
 
 
+def create_story(
+    db: Session,
+    *,
+    centroid,
+    topics: list[str],
+    first_article: Article,
+) -> Story:
+    """Insert a new story seeded by one article. The article is updated
+    in-place to point at the new story_id; story.article_count starts
+    at 1; first_seen_at and last_seen_at are stamped from the article's
+    published_at (or now() as a fallback)."""
+    now = datetime.now(timezone.utc)
+    seen_at = first_article.published_at or now
+    story = Story(
+        centroid=list(centroid),
+        article_count=1,
+        first_seen_at=seen_at,
+        last_seen_at=seen_at,
+        topics=list(topics or []),
+    )
+    db.add(story)
+    db.flush()             # populate story.id
+    first_article.story_id = story.id
+    return story
+
+
+def assign_article_to_story(
+    db: Session,
+    *,
+    article: Article,
+    story: Story,
+    new_centroid,
+) -> None:
+    """Add `article` to `story`, bump article_count, advance last_seen_at,
+    union the topics, and overwrite the centroid with the freshly-computed
+    running mean (caller supplies it L2-normalised)."""
+    article.story_id      = story.id
+    story.centroid        = list(new_centroid)
+    story.article_count   = (story.article_count or 0) + 1
+    if article.published_at is not None and (
+        story.last_seen_at is None or article.published_at > story.last_seen_at
+    ):
+        story.last_seen_at = article.published_at
+    # Topic union (preserve order, dedupe).
+    existing = list(story.topics or [])
+    seen = set(existing)
+    for t in article.topics or []:
+        if t not in seen:
+            existing.append(t)
+            seen.add(t)
+    story.topics = existing
+
+
 # ===================================================================
-# Digest send-state (shared across all three content kinds)
+# Digest send-state
 # ===================================================================
 
 def mark_digest_sent(db: Session, model, ids: list[int]) -> int:
@@ -451,8 +280,7 @@ def mark_digest_sent(db: Session, model, ids: list[int]) -> int:
     Returns the number of rows updated.
 
     Idempotent: re-applying to the same ids just refreshes the timestamp.
-    `model` must have a `digest_sent_at` column - works for Article, Paper,
-    and YoutubeVideo.
+    `model` must have a `digest_sent_at` column.
     """
     if not ids:
         return 0

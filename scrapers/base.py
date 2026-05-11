@@ -1,9 +1,8 @@
 """
 scrapers/base.py - common interface for every scraper.
 
-Every source type (RSS blog, arXiv API, HF Daily Papers) implements the
-same .fetch(hours) -> list. The Runner can then drive them uniformly
-without knowing what kind of source it is.
+Every scraper implements .fetch(hours) -> list. The Runner drives them
+uniformly without knowing what kind of source it is.
 """
 from __future__ import annotations
 
