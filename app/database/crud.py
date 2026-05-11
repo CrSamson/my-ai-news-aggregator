@@ -249,7 +249,14 @@ def assign_article_to_story(
 ) -> None:
     """Add `article` to `story`, bump article_count, advance last_seen_at,
     union the topics, and overwrite the centroid with the freshly-computed
-    running mean (caller supplies it L2-normalised)."""
+    running mean (caller supplies it L2-normalised).
+
+    Also invalidates the story's cached LLM synthesis so the next Phase 5
+    pass re-synthesises with the new member set. The cheapest correct
+    invalidation: NULL the synthesis fields. The synthesis pass only looks
+    at stories whose `synthesis IS NULL`, so this row gets picked up
+    automatically next run.
+    """
     article.story_id      = story.id
     story.centroid        = list(new_centroid)
     story.article_count   = (story.article_count or 0) + 1
@@ -265,6 +272,72 @@ def assign_article_to_story(
             existing.append(t)
             seen.add(t)
     story.topics = existing
+    # Membership changed -> previous synthesis is stale.
+    story.synthesis       = None
+    story.synthesis_model = None
+    story.synthesis_at    = None
+    story.synthesis_hash  = None
+
+
+# ===================================================================
+# Story-level LLM synthesis (Phase 5)
+# ===================================================================
+
+def get_stories_needing_synthesis(
+    db: Session,
+    *,
+    limit: Optional[int] = None,
+    min_size: int = 2,
+    force: bool = False,
+) -> list[Story]:
+    """Return stories whose LLM synthesis is missing or stale.
+
+    Args:
+      min_size: skip stories below this article_count. Default 2 so the
+                synthesis pass only touches multi-article clusters; the
+                470 singletons in the current corpus don't burn API
+                tokens until we explicitly opt them in.
+      force:    bypass the "synthesis is NULL" guard and return every
+                multi-story for re-synthesis. Used by --force flag.
+    """
+    stmt = select(Story).where(Story.article_count >= min_size)
+    if not force:
+        stmt = stmt.where(Story.synthesis.is_(None))
+    stmt = stmt.order_by(Story.last_seen_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_story_members(db: Session, story_id: int) -> list[Article]:
+    """Return every Article belonging to one story, ordered by
+    published_at ascending (so the synthesis prompt sees them in
+    chronological order). Stable order also makes the synthesis_hash
+    deterministic across re-runs."""
+    stmt = (
+        select(Article)
+        .where(Article.story_id == story_id)
+        .order_by(Article.published_at.asc().nullsfirst(), Article.id.asc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def set_story_synthesis(
+    db: Session,
+    story_id: int,
+    *,
+    synthesis: dict,
+    model: str,
+    hash_value: str,
+) -> None:
+    """Persist a freshly-generated synthesis for one story."""
+    story = db.get(Story, story_id)
+    if story is None:
+        raise ValueError(f"Story id={story_id} not found")
+    story.synthesis       = synthesis
+    story.synthesis_model = model
+    story.synthesis_at    = func.now()
+    story.synthesis_hash  = hash_value
 
 
 # ===================================================================

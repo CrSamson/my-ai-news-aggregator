@@ -17,6 +17,9 @@ from .crud import (
     get_active_stories,
     create_story,
     assign_article_to_story,
+    get_stories_needing_synthesis,
+    get_story_members,
+    set_story_synthesis,
     mark_digest_sent,
 )
 
@@ -38,5 +41,8 @@ __all__ = [
     "get_active_stories",
     "create_story",
     "assign_article_to_story",
+    "get_stories_needing_synthesis",
+    "get_story_members",
+    "set_story_synthesis",
     "mark_digest_sent",
 ]

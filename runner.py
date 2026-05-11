@@ -1,11 +1,14 @@
 """
-runner.py - orchestrates blog scraping + embedding + clustering.
+runner.py - orchestrates blog scraping + embedding + clustering + synthesis.
 
 Pipeline:
     1. Scrape every enabled blog source defined in `config/sources.json`.
     2. Embed every article whose `embedding` column is still NULL.
     3. Cluster every embedded article whose `story_id` is still NULL
        into stories (joins existing active stories or seeds new ones).
+    4. Synthesise (LLM) every multi-article story whose `synthesis` is
+       still NULL — produces the headline/summary/key_points/entities/
+       topics JSON the digest will render.
 
 Usage:
     from runner import Runner
@@ -16,10 +19,12 @@ Returned report shape:
     {
         "generated_at": "...",
         "hours": 24,
-        "blogs":   {"sources": {sid: {fetched, inserted, updated, error}}, "total_fetched": N},
-        "embed":   {"embedded": N, "batches": M, "error": str | None},
-        "cluster": {"processed": N, "joined_existing": J, "seeded_new": K,
-                    "final_stories": S, "error": str | None},
+        "blogs":     {"sources": {sid: {fetched, inserted, updated, error}}, "total_fetched": N},
+        "embed":     {"embedded": N, "batches": M, "error": str | None},
+        "cluster":   {"processed": N, "joined_existing": J, "seeded_new": K,
+                      "final_stories": S, "error": str | None},
+        "synthesis": {"processed": N, "skipped": K, "failed": F,
+                      "model": str, "error": str | None},
     }
 """
 from __future__ import annotations
@@ -85,9 +90,10 @@ class Runner:
         print(f"  AI News Aggregator - last {self.hours}h")
         print(f"{'='*60}\n")
 
-        blog_data    = self._scrape_and_save_blogs()
-        embed_data   = self._embed_new_articles()
-        cluster_data = self._cluster_new_articles()
+        blog_data      = self._scrape_and_save_blogs()
+        embed_data     = self._embed_new_articles()
+        cluster_data   = self._cluster_new_articles()
+        synthesis_data = self._synthesise_stories()
 
         report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -95,6 +101,7 @@ class Runner:
             "blogs":        blog_data,
             "embed":        embed_data,
             "cluster":      cluster_data,
+            "synthesis":    synthesis_data,
         }
 
         self._print_summary(report)
@@ -106,7 +113,7 @@ class Runner:
 
     def _scrape_and_save_blogs(self) -> dict:
         sources = load_blog_sources()
-        print(f"[1/3] Scraping {len(sources)} blog source(s) ...")
+        print(f"[1/4] Scraping {len(sources)} blog source(s) ...")
 
         by_source: dict[str, dict] = {}
 
@@ -157,7 +164,7 @@ class Runner:
         with get_db() as db:
             articles = get_unembedded_articles(db)
             n = len(articles)
-            print(f"[2/3] Embedding {n} unembedded article(s) ...")
+            print(f"[2/4] Embedding {n} unembedded article(s) ...")
 
             if n == 0:
                 print(f"      Nothing to embed.\n")
@@ -204,7 +211,7 @@ class Runner:
         # Lazy import keeps numpy out of the path until clustering needs it.
         from agent.clusterer import run_clustering
 
-        print("[3/3] Clustering unclustered articles ...")
+        print("[3/4] Clustering unclustered articles ...")
         try:
             report = run_clustering()
         except Exception as e:  # noqa: BLE001
@@ -228,6 +235,46 @@ class Runner:
             "seeded_new":      report.seeded_new,
             "final_stories":   report.final_stories,
             "error":           None,
+        }
+
+    # ------------------------------------------------------------------
+    # Story-level LLM synthesis (Phase 5)
+    # ------------------------------------------------------------------
+
+    def _synthesise_stories(self) -> dict:
+        """LLM-synthesise every multi-article story whose `synthesis` is
+        still NULL. Singletons are excluded by the default `min_size=2`
+        gate in run_synthesis.
+
+        Failure here is non-fatal — stories without synthesis fall back
+        to their first member's title in the digest until the next pass
+        retries them.
+        """
+        # Lazy import so a scrape-only run doesn't construct the OpenAI client.
+        from agent.story_summarizer import run_synthesis
+
+        print("[4/4] Synthesising multi-stories ...")
+        try:
+            report = run_synthesis()
+        except Exception as e:  # noqa: BLE001
+            print(f"      ERROR: synthesis failed: {e}\n")
+            return {
+                "processed": 0, "skipped": 0, "failed": 0,
+                "model": "", "error": f"{type(e).__name__}: {e}",
+            }
+
+        print(
+            f"      processed={report.processed}, "
+            f"skipped={report.skipped}, "
+            f"failed={report.failed} "
+            f"(model={report.model}, min_size={report.min_size})\n"
+        )
+        return {
+            "processed": report.processed,
+            "skipped":   report.skipped,
+            "failed":    report.failed,
+            "model":     report.model,
+            "error":     None,
         }
 
     # ------------------------------------------------------------------
@@ -267,5 +314,14 @@ class Runner:
               f"total_stories={cluster['final_stories']}")
         if cluster["error"]:
             print(f"          -> {cluster['error']}")
+
+        synthesis = report["synthesis"]
+        tag = "ERR" if synthesis["error"] else " ok"
+        print(f"\n  Synthesis:  [{tag}] processed={synthesis['processed']}, "
+              f"skipped={synthesis['skipped']}, "
+              f"failed={synthesis['failed']} "
+              f"(model={synthesis['model']})")
+        if synthesis["error"]:
+            print(f"          -> {synthesis['error']}")
 
         print(f"\n{'='*60}\n")
