@@ -16,10 +16,11 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-# Load .env from the project root (two levels up from this file: app/database/db.py)
-# override=True ensures the .env file wins over any pre-existing env vars
+# Load .env from the project root (two levels up: app/database/db.py).
+# override=False: process env vars (from Modal Secrets, CI env, etc.) take
+# precedence over .env values. .env is a local-dev convenience only.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(_PROJECT_ROOT / ".env", override=True)
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 DATABASE_URL: str = os.environ["DATABASE_URL"]
 

@@ -56,7 +56,7 @@ log = logging.getLogger(__name__)
 
 # .env at project root (mirrors agent/summarizer.py).
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(_PROJECT_ROOT / ".env", override=True)
+load_dotenv(_PROJECT_ROOT / ".env", override=False)   # process env wins (Modal Secrets etc.)
 
 
 # ---------------------------------------------------------------------------

@@ -87,7 +87,7 @@ def clean_anthropic_title(raw: str) -> str:
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(_PROJECT_ROOT / ".env", override=True)
+load_dotenv(_PROJECT_ROOT / ".env", override=False)   # process env wins (Modal Secrets etc.)
 
 
 # ---------------------------------------------------------------------------
