@@ -36,3 +36,6 @@ tools/extractor_comparison/
 # Cached embeddings produced by experimentation/openai_embedding_compare.py
 # (re-derivable, ~7MB per snapshot)
 experimentation/*.npz
+
+# Claude Code local config / agent state
+.claude/

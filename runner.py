@@ -1,14 +1,17 @@
 """
-runner.py - orchestrates blog scraping + embedding + clustering + synthesis.
+runner.py - orchestrates the full data pipeline.
 
-Pipeline:
+Pipeline (5 steps):
     1. Scrape every enabled blog source defined in `config/sources.json`.
     2. Embed every article whose `embedding` column is still NULL.
     3. Cluster every embedded article whose `story_id` is still NULL
        into stories (joins existing active stories or seeds new ones).
-    4. Synthesise (LLM) every multi-article story whose `synthesis` is
-       still NULL — produces the headline/summary/key_points/entities/
-       topics JSON the digest will render.
+    4. Per-article summarise + LLM topic classification for every article
+       whose `summary` column is still NULL. Used by the app as the
+       singleton card body + by the ranker for topic-bucketing singletons.
+    5. Story-level LLM synthesise for every multi-article story whose
+       `synthesis` is still NULL — produces the headline/summary/key_points/
+       entities/topics JSON the app's multi-source story card renders.
 
 Usage:
     from runner import Runner
@@ -19,12 +22,13 @@ Returned report shape:
     {
         "generated_at": "...",
         "hours": 24,
-        "blogs":     {"sources": {sid: {fetched, inserted, updated, error}}, "total_fetched": N},
-        "embed":     {"embedded": N, "batches": M, "error": str | None},
-        "cluster":   {"processed": N, "joined_existing": J, "seeded_new": K,
-                      "final_stories": S, "error": str | None},
-        "synthesis": {"processed": N, "skipped": K, "failed": F,
-                      "model": str, "error": str | None},
+        "blogs":          {"sources": {...}, "total_fetched": N},
+        "embed":          {"embedded": N, "batches": M, "error": str | None},
+        "cluster":        {"processed": N, "joined_existing": J, "seeded_new": K,
+                           "final_stories": S, "error": str | None},
+        "article_summary":{"processed": N, "failed": F, "error": str | None},
+        "synthesis":      {"processed": N, "skipped": K, "failed": F,
+                           "model": str, "error": str | None},
     }
 """
 from __future__ import annotations
@@ -90,18 +94,20 @@ class Runner:
         print(f"  AI News Aggregator - last {self.hours}h")
         print(f"{'='*60}\n")
 
-        blog_data      = self._scrape_and_save_blogs()
-        embed_data     = self._embed_new_articles()
-        cluster_data   = self._cluster_new_articles()
-        synthesis_data = self._synthesise_stories()
+        blog_data        = self._scrape_and_save_blogs()
+        embed_data       = self._embed_new_articles()
+        cluster_data     = self._cluster_new_articles()
+        article_sum_data = self._summarise_new_articles()
+        synthesis_data   = self._synthesise_stories()
 
         report = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "hours":        self.hours,
-            "blogs":        blog_data,
-            "embed":        embed_data,
-            "cluster":      cluster_data,
-            "synthesis":    synthesis_data,
+            "generated_at":    datetime.now(timezone.utc).isoformat(),
+            "hours":           self.hours,
+            "blogs":           blog_data,
+            "embed":           embed_data,
+            "cluster":         cluster_data,
+            "article_summary": article_sum_data,
+            "synthesis":       synthesis_data,
         }
 
         self._print_summary(report)
@@ -113,7 +119,7 @@ class Runner:
 
     def _scrape_and_save_blogs(self) -> dict:
         sources = load_blog_sources()
-        print(f"[1/4] Scraping {len(sources)} blog source(s) ...")
+        print(f"[1/5] Scraping {len(sources)} blog source(s) ...")
 
         by_source: dict[str, dict] = {}
 
@@ -164,7 +170,7 @@ class Runner:
         with get_db() as db:
             articles = get_unembedded_articles(db)
             n = len(articles)
-            print(f"[2/4] Embedding {n} unembedded article(s) ...")
+            print(f"[2/5] Embedding {n} unembedded article(s) ...")
 
             if n == 0:
                 print(f"      Nothing to embed.\n")
@@ -211,7 +217,7 @@ class Runner:
         # Lazy import keeps numpy out of the path until clustering needs it.
         from agent.clusterer import run_clustering
 
-        print("[3/4] Clustering unclustered articles ...")
+        print("[3/5] Clustering unclustered articles ...")
         try:
             report = run_clustering()
         except Exception as e:  # noqa: BLE001
@@ -238,6 +244,59 @@ class Runner:
         }
 
     # ------------------------------------------------------------------
+    # Per-article LLM summary + topic classification (Phase 5.5)
+    # ------------------------------------------------------------------
+
+    def _summarise_new_articles(self) -> dict:
+        """LLM-summarise + topic-classify every article whose summary is
+        still NULL or empty. Runs on EVERY article, not just singletons —
+        the per-article fields are useful for the app's singleton fallback
+        body, and the LLM-classified `articles.topics` array is what the
+        singleton ranker buckets on.
+
+        Failure here is non-fatal — articles without summary fall back
+        to their RSS description in the app until the next pass retries.
+        """
+        # Lazy import for cost / startup-time consistency with other steps.
+        from agent.summarizer import Summarizer
+        from app.database.crud import get_unsummarized_articles, set_article_summary
+        from openai import OpenAIError
+
+        print("[4/5] Per-article summarise + topic classification ...")
+        try:
+            summarizer = Summarizer()
+        except Exception as e:                                # noqa: BLE001
+            print(f"      ERROR: could not init summarizer: {e}\n")
+            return {"processed": 0, "failed": 0,
+                    "error": f"{type(e).__name__}: {e}"}
+
+        processed = 0
+        failed    = 0
+        with get_db() as db:
+            articles = get_unsummarized_articles(db)
+            n = len(articles)
+            print(f"      {n} unsummarised article(s)")
+            for i, a in enumerate(articles, start=1):
+                try:
+                    summary, topics = summarizer.summarize_article(a)
+                    set_article_summary(db, a.id, summary, topics=topics)
+                    db.commit()
+                    processed += 1
+                    if i % 20 == 0 or i == n:
+                        print(f"      progress: {i}/{n}")
+                except OpenAIError as e:                      # noqa: BLE001
+                    failed += 1
+                    db.rollback()
+                    print(f"      [fail] article id={a.id}: {e}")
+                except Exception as e:                        # noqa: BLE001
+                    failed += 1
+                    db.rollback()
+                    print(f"      [fail] article id={a.id}: {e}")
+
+        print(f"      Total: processed={processed}, failed={failed}\n")
+        return {"processed": processed, "failed": failed, "error": None}
+
+    # ------------------------------------------------------------------
     # Story-level LLM synthesis (Phase 5)
     # ------------------------------------------------------------------
 
@@ -253,7 +312,7 @@ class Runner:
         # Lazy import so a scrape-only run doesn't construct the OpenAI client.
         from agent.story_summarizer import run_synthesis
 
-        print("[4/4] Synthesising multi-stories ...")
+        print("[5/5] Synthesising multi-stories ...")
         try:
             report = run_synthesis()
         except Exception as e:  # noqa: BLE001
@@ -314,6 +373,13 @@ class Runner:
               f"total_stories={cluster['final_stories']}")
         if cluster["error"]:
             print(f"          -> {cluster['error']}")
+
+        art_sum = report["article_summary"]
+        tag = "ERR" if art_sum["error"] else " ok"
+        print(f"\n  Article LLM: [{tag}] processed={art_sum['processed']}, "
+              f"failed={art_sum['failed']}")
+        if art_sum["error"]:
+            print(f"          -> {art_sum['error']}")
 
         synthesis = report["synthesis"]
         tag = "ERR" if synthesis["error"] else " ok"
