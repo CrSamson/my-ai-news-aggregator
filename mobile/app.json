@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Brevio",
+    "slug": "brevio",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "brevio",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FAF5EE"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ai.brevio.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#FAF5EE"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "ai.brevio.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png",
+      "name": "Brevio",
+      "shortName": "Brevio",
+      "themeColor": "#EE9970",
+      "backgroundColor": "#FAF5EE",
+      "display": "standalone"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
