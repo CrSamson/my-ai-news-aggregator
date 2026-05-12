@@ -28,3 +28,8 @@ numpy>=1.26,<3
 
 # Scheduler
 apscheduler>=3.10.0
+
+# HTTP API (FastAPI deployed as Modal ASGI app — see modal_api.py)
+fastapi>=0.115,<1
+# uvicorn is used for local dev + as ASGI server when not on Modal.
+uvicorn[standard]>=0.32,<1
