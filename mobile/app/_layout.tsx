@@ -10,6 +10,7 @@
  * The splash screen stays up until fonts have loaded so the first
  * paint doesn't flash system-default fonts.
  */
+import { Ionicons } from "@expo/vector-icons";
 import { Lora_500Medium, Lora_700Bold } from "@expo-google-fonts/lora";
 import {
   Inter_400Regular,
@@ -70,11 +71,16 @@ const persister = createAsyncStoragePersister({
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
+    // Brand fonts.
     Lora_500Medium,
     Lora_700Bold,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
+    // Icon font: Expo's vector-icons ship a .ttf that auto-loads on
+    // native but NOT on web static export — without this, every Ionicon
+    // renders as the .notdef glyph (an empty square) on the PWA.
+    ...Ionicons.font,
   });
 
   useEffect(() => {
