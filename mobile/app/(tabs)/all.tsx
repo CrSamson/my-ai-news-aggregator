@@ -5,8 +5,9 @@
  * Full chronological feed UI ships in Phase D.
  */
 import React from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
 import { Body, Card, DisplayHL, Headline, Meta } from "../../components/ui";
 import { useAllStories } from "../../lib/hooks";
@@ -16,6 +17,7 @@ import { useTheme } from "../../lib/useTheme";
 
 export default function AllNewsTab() {
   const { palette } = useTheme();
+  const router = useRouter();
   const { data, isLoading } = useAllStories({ hours: 48, limit: 10 });
 
   return (
@@ -41,12 +43,20 @@ export default function AllNewsTab() {
                 Full feed UI lands in Phase D — for now showing the first few headlines:
               </Meta>
               {data?.items.slice(0, 5).map((s) => (
-                <View key={s.id} style={{ marginTop: space.md }}>
+                <Pressable
+                  key={s.id}
+                  onPress={() =>
+                    router.push({ pathname: "/story/[id]", params: { id: String(s.id) } })
+                  }
+                  style={({ pressed }) => [
+                    { marginTop: space.md, opacity: pressed ? 0.6 : 1 },
+                  ]}
+                >
                   <Headline numberOfLines={2}>{s.headline}</Headline>
                   <Meta muted style={{ marginTop: 2 }}>
                     {s.primary_source ?? "?"} · {formatRelativeTime(s.last_seen_at)}
                   </Meta>
-                </View>
+                </Pressable>
               ))}
             </Card>
           )}

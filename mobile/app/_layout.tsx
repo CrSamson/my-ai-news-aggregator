@@ -98,14 +98,30 @@ export default function RootLayout() {
 }
 
 function RootLayoutNav() {
-  const { scheme } = useTheme();
+  const { scheme, palette } = useTheme();
   return (
     <>
       <StatusBar style={scheme === "dark" ? "light" : "dark"} />
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        {/* Story-detail screen (Phase C) will register here as
-            <Stack.Screen name="story/[id]" /> when its file lands. */}
+        <Stack.Screen
+          name="story/[id]"
+          options={{
+            headerShown:     true,
+            headerTitle:     "",
+            headerBackTitle: "Back",
+            headerStyle:     { backgroundColor: palette.bg },
+            headerShadowVisible: false,
+            headerTintColor: palette.accent,
+          }}
+        />
+        <Stack.Screen
+          name="browser"
+          options={{
+            presentation: "modal",
+            headerShown:  false,
+          }}
+        />
       </Stack>
     </>
   );

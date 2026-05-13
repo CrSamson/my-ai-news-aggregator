@@ -1,36 +1,30 @@
 /**
- * app/(tabs)/index.tsx — Top Stories tab (placeholder for Phase B).
+ * app/(tabs)/index.tsx — Top Stories tab.
  *
- * Phase B scope: load real data via useTopStories(), render a count + a
- * minimal preview. The full Story Card UI (multi-source vs singleton
- * variants, source dots, fade-out preview) lands in Phase C.
+ * Header + FlatList of <StoryCard> (variant chosen per item). Cards tap-
+ * navigate to /story/[id]. Pull-to-refresh, skeleton/empty/error states.
  *
- * The point of this Phase B scaffold is to prove end-to-end:
- *   theme → fonts → tabs nav → API client → React Query → UI
+ * Why a 168h window: we run one cron a day on a sometimes-bumpy OpenAI
+ * billing pipeline; a 7-day window guarantees content even after a day
+ * of failed synthesis. Once the pipeline has been clean for a few weeks
+ * we can drop this back to 24-48h.
  */
 import React from "react";
-import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
+import { FlatList, RefreshControl, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
-import {
-  Body,
-  Card,
-  DisplayHL,
-  Headline,
-  Meta,
-  Preview,
-  SourceDotRow,
-  TopicChipRow,
-} from "../../components/ui";
+import { Body, Card, DisplayHL, Headline, Meta } from "../../components/ui";
+import { StoryCard } from "../../components/StoryCard";
 import { useTopStories } from "../../lib/hooks";
-import { formatRelativeTime } from "../../lib/time";
 import { space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
 
 export default function TopStoriesTab() {
   const { palette } = useTheme();
+  const router = useRouter();
   const { data, isLoading, isError, refetch, isRefetching } = useTopStories({
-    hours: 168,    // 7-day window so we see meaningful data while OpenAI billing is pending
+    hours: 168,
     limit: 20,
   });
 
@@ -77,34 +71,16 @@ export default function TopStoriesTab() {
             </Card>
           )
         }
+        ItemSeparatorComponent={() => <View style={{ height: space.lg }} />}
         renderItem={({ item }) => (
-          <Card style={{ marginBottom: space.lg }}>
-            <TopicChipRow topics={item.topics} style={{ marginBottom: space.sm }} />
-            <Headline numberOfLines={3} style={{ marginBottom: space.sm }}>
-              {item.headline}
-            </Headline>
-            <Preview muted numberOfLines={3} style={{ marginBottom: space.md }}>
-              {item.summary_preview}
-            </Preview>
-            <View style={styles.metaRow}>
-              <SourceDotRow sources={item.source_ids} />
-              <Meta muted>
-                {item.article_count} source{item.article_count === 1 ? "" : "s"}
-                {item.last_seen_at ? ` · ${formatRelativeTime(item.last_seen_at)}` : ""}
-              </Meta>
-            </View>
-          </Card>
+          <StoryCard
+            story={item}
+            onPress={() =>
+              router.push({ pathname: "/story/[id]", params: { id: String(item.id) } })
+            }
+          />
         )}
       />
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  metaRow: {
-    flexDirection: "row",
-    alignItems:    "center",
-    justifyContent: "space-between",
-    gap:           space.sm,
-  },
-});
