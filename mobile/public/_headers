@@ -24,3 +24,8 @@
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Icons are stable across builds (regenerated from tools/make_pwa_icons.py
+# only when the design changes); ETag-based revalidation is fine.
+/icons/*
+  Cache-Control: public, max-age=604800
