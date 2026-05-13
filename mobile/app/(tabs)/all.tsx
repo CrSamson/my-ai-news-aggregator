@@ -7,7 +7,7 @@
  *
  * Same <StoryCard> dispatcher as the Top tab, same navigation to detail.
  */
-import React from "react";
+import React, { useMemo } from "react";
 import { FlatList, RefreshControl, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -27,6 +27,11 @@ export default function AllNewsTab() {
     hours: WINDOW_HOURS,
     limit: 100,
   });
+
+  const queueParam = useMemo(
+    () => (data?.items ?? []).map((s) => s.id).join(","),
+    [data?.items],
+  );
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["top"]}>
@@ -74,7 +79,10 @@ export default function AllNewsTab() {
           <StoryCard
             story={item}
             onPress={() =>
-              router.push({ pathname: "/story/[id]", params: { id: String(item.id) } })
+              router.push({
+                pathname: "/story/[id]",
+                params:   { id: String(item.id), queue: queueParam },
+              })
             }
           />
         )}

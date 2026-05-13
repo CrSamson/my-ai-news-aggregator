@@ -9,7 +9,7 @@
  * of failed synthesis. Once the pipeline has been clean for a few weeks
  * we can drop this back to 24-48h.
  */
-import React from "react";
+import React, { useMemo } from "react";
 import { FlatList, RefreshControl, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -27,6 +27,13 @@ export default function TopStoriesTab() {
     hours: 168,
     limit: 20,
   });
+
+  // Comma-separated story-ID list passed to the pager so swiping in detail
+  // navigates through *this* feed's siblings, not some global order.
+  const queueParam = useMemo(
+    () => (data?.items ?? []).map((s) => s.id).join(","),
+    [data?.items],
+  );
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["top"]}>
@@ -79,7 +86,10 @@ export default function TopStoriesTab() {
           <StoryCard
             story={item}
             onPress={() =>
-              router.push({ pathname: "/story/[id]", params: { id: String(item.id) } })
+              router.push({
+                pathname: "/story/[id]",
+                params:   { id: String(item.id), queue: queueParam },
+              })
             }
           />
         )}

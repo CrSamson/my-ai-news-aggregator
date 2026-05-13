@@ -45,6 +45,9 @@ export function Card({
     padding,
     borderWidth:     StyleSheet.hairlineWidth,
     borderColor:     palette.border,
+    // Clip absolutely-positioned children (e.g. MultiStoryCard's left-edge
+    // accent bar) to the rounded corners.
+    overflow:        "hidden",
   };
 
   if (isStatic) {

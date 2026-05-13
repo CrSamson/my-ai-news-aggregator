@@ -1,185 +1,152 @@
 /**
- * app/story/[id].tsx — Story Detail screen.
+ * app/story/[id].tsx — Instagram-Stories-style story pager.
  *
- * UI spec §6: the "moneymaker" screen. Layout:
- *   - Topic chips row
- *   - 28pt serif headline
- *   - "N sources · First reported Xd ago" meta
- *   - SUMMARY section (16pt body)
- *   - KEY POINTS section (bulleted)
- *   - TIMELINE — N SOURCES (vertical-rail chronology, oldest first)
+ * Phase G: tapping a card on the Top tab opens this screen with two route
+ * params:
+ *   - id     — which story to start on
+ *   - queue  — comma-separated story IDs from the originating feed
  *
- * For singletons (article_count === 1):
- *   - Replace TIMELINE with a single SOURCE card.
- *   - If `summary` is empty (synthesis was skipped), the API already filled
- *     it from articles.summary or RSS description, so we don't branch here.
+ * The screen renders all queued stories side-by-side inside a horizontal
+ * ScrollView with `pagingEnabled`, so swiping left/right snaps to the next
+ * or previous story. Progress bars at the top mirror Instagram Stories: one
+ * dot per item in the queue, current one peach-filled.
  *
- * Tapping a source card opens it in the in-app WebView (`/browser?url=...`).
+ * Tap zones overlay the left and right thirds of the screen — tap-right
+ * advances, tap-left goes back — so the screen works one-handed without
+ * fighting the swipe gesture.
+ *
+ * Direct link (no `queue` param): falls back to a single-story render. This
+ * is what an external share link or a refresh on a deep URL hits.
  */
-import React, { useMemo } from "react";
-import { ActivityIndicator, ScrollView, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { Body, Card, DisplayHL, Headline, Meta, SectionLabel, TopicChipRow } from "../../components/ui";
-import { Timeline } from "../../components/story/Timeline";
-import { useStoryDetail } from "../../lib/hooks";
-import { formatRelativeTime } from "../../lib/time";
+import { StoryView } from "../../components/story/StoryView";
+import { StoryPagerHeader } from "../../components/story/StoryPagerHeader";
 import { space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
-import type { ArticleSource } from "../../lib/api";
+
+function parseQueue(raw: string | string[] | undefined): number[] {
+  if (!raw) return [];
+  const str = Array.isArray(raw) ? raw[0] : raw;
+  return str
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
 
 export default function StoryDetailScreen() {
   const { palette } = useTheme();
-  const router = useRouter();
-  const params = useLocalSearchParams<{ id: string }>();
-  const storyId = Number(params.id);
+  const router      = useRouter();
+  const { width }   = useWindowDimensions();
+  const params      = useLocalSearchParams<{ id: string; queue?: string }>();
 
-  const { data: story, isLoading, isError, refetch } = useStoryDetail(storyId);
+  const currentId = Number(params.id);
+  const queue     = useMemo(() => parseQueue(params.queue), [params.queue]);
+  const pages     = queue.length > 0 ? queue : [currentId];
 
-  // Sort member articles oldest→newest so the timeline reads chronologically.
-  const sortedArticles = useMemo<ArticleSource[]>(() => {
-    if (!story?.articles) return [];
-    return [...story.articles].sort((a, b) => {
-      const ta = a.published_at ? new Date(a.published_at).getTime() : 0;
-      const tb = b.published_at ? new Date(b.published_at).getTime() : 0;
-      return ta - tb;
-    });
-  }, [story?.articles]);
+  const startIndex = useMemo(() => {
+    const i = pages.indexOf(currentId);
+    return i >= 0 ? i : 0;
+  }, [pages, currentId]);
 
-  const openArticle = (article: ArticleSource) => {
-    router.push({
-      pathname: "/browser",
-      params: {
-        url:    article.url,
-        source: article.source_display_name ?? article.source,
-      },
-    });
+  const [activeIndex, setActiveIndex] = useState(startIndex);
+  const scrollRef = useRef<ScrollView>(null);
+
+  // Jump to the starting page on mount (and whenever width recomputes, e.g.
+  // on rotation — keep the user pinned to the current story).
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ x: startIndex * width, y: 0, animated: false });
+  }, [startIndex, width]);
+
+  const goToIndex = (i: number) => {
+    const clamped = Math.max(0, Math.min(pages.length - 1, i));
+    scrollRef.current?.scrollTo({ x: clamped * width, y: 0, animated: true });
+    setActiveIndex(clamped);
   };
 
-  if (isLoading || !story) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }}>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          {isError ? (
-            <View style={{ padding: space.xl, alignItems: "center" }}>
-              <Headline>Couldn't load story</Headline>
-              <Body
-                onPress={() => refetch()}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading story"
-                style={{
-                  marginTop:          space.sm,
-                  color:              palette.accent,
-                  textDecorationLine: "underline",
-                }}
-              >
-                Tap to retry
-              </Body>
-            </View>
-          ) : (
-            <ActivityIndicator color={palette.accent} />
-          )}
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  const isMulti       = story.is_multi_source;
-  const firstSeenAt   = story.first_seen_at;
-  const firstReported = firstSeenAt ? formatRelativeTime(firstSeenAt) : "";
-  const sourcesLabel  = `${story.article_count} source${story.article_count === 1 ? "" : "s"}`;
-  const metaLine      = firstReported
-    ? `${sourcesLabel} · First reported ${firstReported}`
-    : sourcesLabel;
+  const onScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const i = Math.round(e.nativeEvent.contentOffset.x / width);
+    if (i !== activeIndex) {
+      setActiveIndex(i);
+      // Reflect the active story in the URL so a refresh / share lands on it.
+      const newId = pages[i];
+      if (newId && newId !== currentId) {
+        router.setParams({ id: String(newId) });
+      }
+    }
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["bottom"]}>
-      <ScrollView
-        contentContainerStyle={{
-          paddingHorizontal: space.xl,
-          paddingBottom:     space.xxxl * 2,
-          paddingTop:        space.sm,
-        }}
-      >
-        {story.topics.length > 0 && (
-          <TopicChipRow topics={story.topics} style={{ marginBottom: space.md }} />
+      <StoryPagerHeader
+        total={pages.length}
+        currentIndex={activeIndex}
+        onJump={goToIndex}
+      />
+
+      <View style={{ flex: 1 }}>
+        <ScrollView
+          ref={scrollRef}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={onScrollEnd}
+          // On web, onMomentumScrollEnd doesn't fire — use onScrollEnd alternative.
+          onScrollEndDrag={onScrollEnd}
+          // Snap precisely to each page even when scroll velocity is low.
+          decelerationRate="fast"
+          snapToInterval={width}
+          snapToAlignment="start"
+        >
+          {pages.map((id) => (
+            <StoryView key={id} storyId={id} width={width} />
+          ))}
+        </ScrollView>
+
+        {/* Tap zones: thin vertical strips on the screen edges. Confined to
+            the outer 12% on each side so the middle 76% stays free for the
+            ScrollView's own scrolling + link taps lower on the page. Also
+            cap height so they don't overlap the source-card region near the
+            bottom — only the upper portion of each edge is a "tap to advance"
+            affordance. */}
+        {pages.length > 1 && (
+          <>
+            <Pressable
+              accessibilityLabel="Previous story"
+              accessibilityRole="button"
+              onPress={() => goToIndex(activeIndex - 1)}
+              style={[styles.tapZone, { left: 0, width: width * 0.12 }]}
+            />
+            <Pressable
+              accessibilityLabel="Next story"
+              accessibilityRole="button"
+              onPress={() => goToIndex(activeIndex + 1)}
+              style={[styles.tapZone, { right: 0, width: width * 0.12 }]}
+            />
+          </>
         )}
-
-        <DisplayHL style={{ marginBottom: space.md }}>
-          {story.headline}
-        </DisplayHL>
-
-        <Meta muted style={{ marginBottom: space.xl }}>
-          {metaLine}
-        </Meta>
-
-        {/* SUMMARY */}
-        {story.summary?.length > 0 && (
-          <View style={{ marginBottom: space.xl }}>
-            <SectionLabel muted style={{ marginBottom: space.sm }}>SUMMARY</SectionLabel>
-            <Body>{story.summary}</Body>
-          </View>
-        )}
-
-        {/* KEY POINTS */}
-        {story.key_points.length > 0 && (
-          <View style={{ marginBottom: space.xl }}>
-            <SectionLabel muted style={{ marginBottom: space.sm }}>KEY POINTS</SectionLabel>
-            {story.key_points.map((point, i) => (
-              <View
-                key={i}
-                style={{
-                  flexDirection: "row",
-                  marginBottom:  space.sm,
-                  alignItems:    "flex-start",
-                }}
-              >
-                <Body style={{ color: palette.accent, marginRight: space.sm }}>•</Body>
-                <Body style={{ flex: 1 }}>{point}</Body>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* TIMELINE / SOURCE */}
-        <View style={{ marginBottom: space.xl }}>
-          <SectionLabel muted style={{ marginBottom: space.md }}>
-            {isMulti ? `TIMELINE — ${story.article_count} SOURCES` : "SOURCE"}
-          </SectionLabel>
-
-          {isMulti ? (
-            <Timeline articles={sortedArticles} onPressArticle={openArticle} />
-          ) : sortedArticles[0] ? (
-            <Card soft onPress={() => openArticle(sortedArticles[0])}>
-              <SectionLabel style={{ color: palette.accent }}>
-                {(sortedArticles[0].source_display_name ?? sortedArticles[0].source).toUpperCase()}
-              </SectionLabel>
-              {sortedArticles[0].published_at && (
-                <Meta muted style={{ marginTop: space.xs }}>
-                  {formatRelativeTime(sortedArticles[0].published_at)}
-                </Meta>
-              )}
-              <Headline numberOfLines={3} style={{ marginTop: space.sm, fontSize: 16, lineHeight: 22 }}>
-                {sortedArticles[0].title}
-              </Headline>
-              {sortedArticles[0].author && (
-                <Meta muted style={{ marginTop: space.xs }}>By {sortedArticles[0].author}</Meta>
-              )}
-              <Body
-                accessibilityRole="link"
-                style={{
-                  marginTop:          space.sm,
-                  color:              palette.accent,
-                  textDecorationLine: "underline",
-                }}
-              >
-                Read on {sortedArticles[0].source_display_name ?? sortedArticles[0].source.replace(/_/g, " ")} →
-              </Body>
-            </Card>
-          ) : null}
-        </View>
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  tapZone: {
+    position: "absolute",
+    top:      0,
+    // Confine to the very top of the screen so it doesn't fight links lower
+    // down. Touching the top corners is the "tap to advance" affordance.
+    height:   100,
+  },
+});

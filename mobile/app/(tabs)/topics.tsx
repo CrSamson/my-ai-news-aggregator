@@ -62,8 +62,21 @@ export default function TopicsTab() {
     return out;
   }, [data]);
 
+  // Queue covers both sections in display order: multi-stories first,
+  // singletons after. Swiping in detail then traverses the topic feed
+  // the user actually sees.
+  const queueParam = useMemo(() => {
+    if (!data) return "";
+    return [...data.multi_stories, ...data.top_singletons]
+      .map((s) => s.id)
+      .join(",");
+  }, [data]);
+
   const openStory = (id: number) =>
-    router.push({ pathname: "/story/[id]", params: { id: String(id) } });
+    router.push({
+      pathname: "/story/[id]",
+      params:   { id: String(id), queue: queueParam },
+    });
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["top"]}>
