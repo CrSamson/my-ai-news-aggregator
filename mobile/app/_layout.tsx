@@ -29,6 +29,7 @@ import "react-native-reanimated";
 
 import { useTheme } from "../lib/useTheme";
 import { OnboardingGate } from "../components/Onboarding";
+import "../lib/registerSW";
 
 export { ErrorBoundary } from "expo-router";
 

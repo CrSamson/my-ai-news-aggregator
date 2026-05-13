@@ -1,0 +1,6 @@
+# Cloudflare Pages SPA fallback.
+# Expo Router emits hashed JS chunks at /static/* and discrete HTML files
+# for the known routes (/, /topics, /all, /about, /browser, /story/[id]).
+# Any deep link that doesn't match a built file should serve index so
+# client-side routing can take over.
+/*    /index.html   200

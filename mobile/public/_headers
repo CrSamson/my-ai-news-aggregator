@@ -1,0 +1,26 @@
+# Cloudflare Pages caching policy.
+#
+# The service worker MUST NEVER be served from a CDN/browser cache —
+# otherwise users get stuck on an old SW that points at stale JS chunks.
+# Same logic applies to the manifest.
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate
+
+/manifest.json
+  Cache-Control: no-cache, no-store, must-revalidate
+
+# HTML entry: revalidate every load so a freshly-built bundle reaches users
+# within one request, not after a stale-CDN TTL.
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Hashed JS/CSS chunks: filename changes on every build, so cache them
+# aggressively. Same for fonts.
+/_expo/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

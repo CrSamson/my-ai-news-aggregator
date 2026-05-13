@@ -1,0 +1,15 @@
+{
+  "name": "Brevio",
+  "short_name": "Brevio",
+  "description": "One story, every source, full timeline.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FAF5EE",
+  "theme_color": "#EE9970",
+  "lang": "en",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "any", "type": "image/x-icon" }
+  ]
+}
