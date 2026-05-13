@@ -28,6 +28,7 @@ import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 
 import { useTheme } from "../lib/useTheme";
+import { OnboardingGate } from "../components/Onboarding";
 
 export { ErrorBoundary } from "expo-router";
 
@@ -92,7 +93,9 @@ export default function RootLayout() {
       client={queryClient}
       persistOptions={{ persister, maxAge: 7 * 24 * 60 * 60 * 1_000 }}
     >
-      <RootLayoutNav />
+      <OnboardingGate>
+        <RootLayoutNav />
+      </OnboardingGate>
     </PersistQueryClientProvider>
   );
 }
