@@ -24,14 +24,17 @@ type Props = {
   style?:   any;
 };
 
-export function MultiStoryCard({ story, onPress, style }: Props) {
+export const MultiStoryCard = React.memo(MultiStoryCardImpl);
+
+function MultiStoryCardImpl({ story, onPress, style }: Props) {
   const { palette } = useTheme();
 
   const ago = story.last_seen_at ? formatRelativeTime(story.last_seen_at) : "";
   const sourcesLabel = `${story.article_count} source${story.article_count === 1 ? "" : "s"}`;
+  const a11yLabel = `${story.headline}. ${sourcesLabel}${ago ? `, ${ago}` : ""}.`;
 
   return (
-    <Card onPress={onPress} style={style}>
+    <Card onPress={onPress} style={style} accessibilityLabel={a11yLabel}>
       {story.topics.length > 0 && (
         <TopicChipRow topics={story.topics} style={{ marginBottom: space.sm }} />
       )}

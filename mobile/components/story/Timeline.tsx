@@ -98,6 +98,8 @@ function TimelineRow({ article, isFirstReported, isLast, railColor, onPress }: R
       {/* source card */}
       <Pressable
         onPress={onPress}
+        accessibilityRole="link"
+        accessibilityLabel={`${sourceLabel}${isFirstReported ? ", first reported" : ""}${when ? `, ${when}` : ""}. ${article.title}. Read on ${article.source_display_name ?? article.source.replace(/_/g, " ")}`}
         style={({ pressed }) => [
           styles.card,
           {
@@ -129,7 +131,17 @@ function TimelineRow({ article, isFirstReported, isLast, railColor, onPress }: R
           </Meta>
         )}
 
-        <Body style={[styles.readLink, { color: palette.accent, fontFamily: fonts.sansSemibold }]}>
+        <Body
+          accessibilityRole="link"
+          style={[
+            styles.readLink,
+            {
+              color:              palette.accent,
+              fontFamily:         fonts.sansSemibold,
+              textDecorationLine: "underline",
+            },
+          ]}
+        >
           Read on {article.source_display_name ?? article.source.replace(/_/g, " ")} →
         </Body>
       </Pressable>

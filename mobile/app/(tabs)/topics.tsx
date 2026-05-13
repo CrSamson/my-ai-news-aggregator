@@ -71,6 +71,9 @@ export default function TopicsTab() {
         data={rows}
         keyExtractor={(row) => row.key}
         contentContainerStyle={{ paddingBottom: space.xxxl }}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={9}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}

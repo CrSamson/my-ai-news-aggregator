@@ -42,7 +42,8 @@ const DARK: Palette = {
   cardBg:      "#2A1F1A",
   cardBgSoft:  "#3A2D26",
   textPrimary: "#F6BFA1",
-  textMuted:   "#9B8D85",
+  // Brightened from #9B8D85 to clear WCAG AA on cardBgSoft for 12pt meta text.
+  textMuted:   "#C5BAB1",
   border:      "#3A2D26",
   accent:      "#EE9970",
   accentText:  "#1A1410",

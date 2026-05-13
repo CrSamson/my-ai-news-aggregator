@@ -53,6 +53,7 @@ export function Card({
 
   return (
     <Pressable
+      accessibilityRole="button"
       {...rest}
       style={({ pressed }) => [
         baseStyle,

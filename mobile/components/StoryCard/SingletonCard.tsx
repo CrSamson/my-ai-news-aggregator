@@ -26,14 +26,17 @@ type Props = {
   style?:   any;
 };
 
-export function SingletonCard({ story, onPress, style }: Props) {
+export const SingletonCard = React.memo(SingletonCardImpl);
+
+function SingletonCardImpl({ story, onPress, style }: Props) {
   const { palette } = useTheme();
   const primaryTopic = story.topics[0];
   const source       = story.primary_source ?? story.source_ids[0] ?? "";
   const ago          = story.last_seen_at ? formatRelativeTime(story.last_seen_at) : "";
+  const a11yLabel    = `${story.headline}.${source ? ` ${source.replace(/_/g, " ")}` : ""}${ago ? `, ${ago}` : ""}.`;
 
   return (
-    <Card onPress={onPress} style={style} padding={space.lg}>
+    <Card onPress={onPress} style={style} padding={space.lg} accessibilityLabel={a11yLabel}>
       {primaryTopic && (
         <TopicChip label={primaryTopic} mode="inline" style={{ marginBottom: space.xs }} />
       )}

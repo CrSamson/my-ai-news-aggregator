@@ -64,7 +64,16 @@ export default function StoryDetailScreen() {
           {isError ? (
             <View style={{ padding: space.xl, alignItems: "center" }}>
               <Headline>Couldn't load story</Headline>
-              <Body onPress={() => refetch()} style={{ marginTop: space.sm, color: palette.accent }}>
+              <Body
+                onPress={() => refetch()}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading story"
+                style={{
+                  marginTop:          space.sm,
+                  color:              palette.accent,
+                  textDecorationLine: "underline",
+                }}
+              >
                 Tap to retry
               </Body>
             </View>
@@ -157,7 +166,14 @@ export default function StoryDetailScreen() {
               {sortedArticles[0].author && (
                 <Meta muted style={{ marginTop: space.xs }}>By {sortedArticles[0].author}</Meta>
               )}
-              <Body style={{ marginTop: space.sm, color: palette.accent }}>
+              <Body
+                accessibilityRole="link"
+                style={{
+                  marginTop:          space.sm,
+                  color:              palette.accent,
+                  textDecorationLine: "underline",
+                }}
+              >
                 Read on {sortedArticles[0].source_display_name ?? sortedArticles[0].source.replace(/_/g, " ")} →
               </Body>
             </Card>

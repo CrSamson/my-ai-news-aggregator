@@ -3,6 +3,7 @@
     "name": "Brevio",
     "slug": "brevio",
     "version": "0.1.0",
+    "description": "One story, every source, full timeline. A daily news digest for AI, technology, business, and science.",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "brevio",
@@ -11,7 +12,12 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FAF5EE"
+      "backgroundColor": "#FAF5EE",
+      "dark": {
+        "image": "./assets/images/splash-icon.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#1A1410"
+      }
     },
     "ios": {
       "supportsTablet": true,
@@ -32,9 +38,11 @@
       "favicon": "./assets/images/favicon.png",
       "name": "Brevio",
       "shortName": "Brevio",
+      "description": "One story, every source, full timeline.",
       "themeColor": "#EE9970",
       "backgroundColor": "#FAF5EE",
-      "display": "standalone"
+      "display": "standalone",
+      "lang": "en"
     },
     "plugins": [
       "expo-router"

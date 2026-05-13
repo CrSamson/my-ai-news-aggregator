@@ -34,6 +34,9 @@ export default function TopStoriesTab() {
         data={data?.items ?? []}
         keyExtractor={(item) => `story-${item.id}`}
         contentContainerStyle={{ padding: space.xl, paddingBottom: space.xxxl }}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={9}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
