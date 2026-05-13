@@ -117,12 +117,13 @@ function RootLayoutNav() {
         <Stack.Screen
           name="story/[id]"
           options={{
-            headerShown:     true,
-            headerTitle:     "",
-            headerBackTitle: "Back",
-            headerStyle:     { backgroundColor: palette.bg },
-            headerShadowVisible: false,
-            headerTintColor: palette.accent,
+            // Modal presentation: iOS gets native swipe-down-to-dismiss
+            // for free; Android falls back to the system back button.
+            // The screen draws its own close button so we hide the header.
+            presentation:    "modal",
+            headerShown:     false,
+            gestureEnabled:  true,
+            contentStyle:    { backgroundColor: palette.bg },
           }}
         />
         <Stack.Screen

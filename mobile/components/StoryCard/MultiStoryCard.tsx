@@ -17,6 +17,7 @@ import { StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { Card, Headline, Meta, Preview, SourceDotRow, TopicChipRow } from "../ui";
+import { SavedIndicator } from "./SavedIndicator";
 import { formatRelativeTime } from "../../lib/time";
 import { space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
@@ -69,6 +70,8 @@ function MultiStoryCardImpl({ story, onPress, style }: Props) {
         end={{ x: 0.25, y: 0.5 }}
         style={StyleSheet.absoluteFill}
       />
+
+      <SavedIndicator storyId={story.id} />
 
       {story.topics.length > 0 && (
         <TopicChipRow topics={story.topics} style={{ marginBottom: space.sm }} />

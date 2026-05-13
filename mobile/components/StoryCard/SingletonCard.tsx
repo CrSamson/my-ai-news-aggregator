@@ -15,6 +15,7 @@ import React from "react";
 import { StyleSheet, View } from "react-native";
 
 import { Card, Headline, Meta, Preview, SourceDot, TopicChip } from "../ui";
+import { SavedIndicator } from "./SavedIndicator";
 import { formatRelativeTime } from "../../lib/time";
 import { space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
@@ -37,6 +38,8 @@ function SingletonCardImpl({ story, onPress, style }: Props) {
 
   return (
     <Card onPress={onPress} style={style} padding={space.lg} accessibilityLabel={a11yLabel}>
+      <SavedIndicator storyId={story.id} />
+
       {primaryTopic && (
         <TopicChip label={primaryTopic} mode="inline" style={{ marginBottom: space.xs }} />
       )}

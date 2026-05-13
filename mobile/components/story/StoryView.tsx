@@ -1,28 +1,33 @@
 /**
  * components/story/StoryView.tsx — single-story detail render.
  *
- * Pulled out of app/story/[id].tsx so the screen can paginate between
- * sibling stories without duplicating layout. Self-contained: fetches its
- * own data via useStoryDetail and handles loading / error / empty.
+ * Pulled out of app/story/[id].tsx so the pager doesn't duplicate layout.
  *
- * Layout matches UI spec §6 (topic chips, headline, meta, SUMMARY,
- * KEY POINTS, TIMELINE for multi-source or SOURCE for singletons).
+ * Phase H3: full-bleed peach gradient hero at the top — headline + meta
+ * sit on the same gradient as the app icon (cohesive brand surface).
+ * Below the hero, body sections (chips, summary, key points, timeline)
+ * sit on the cream bg with the normal text contrast.
  */
 import React, { useMemo } from "react";
-import { ActivityIndicator, ScrollView, View } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { Body, Card, DisplayHL, Headline, Meta, SectionLabel, TopicChipRow } from "../ui";
 import { Timeline } from "./Timeline";
 import { useStoryDetail } from "../../lib/hooks";
 import { formatRelativeTime } from "../../lib/time";
-import { space } from "../../lib/theme";
+import { fonts, space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
 import type { ArticleSource } from "../../lib/api";
 
+// Gradient endpoints match tools/make_pwa_icons.py so the hero feels like
+// it was painted on the same canvas as the app icon.
+const HERO_FROM = "#F2A883";
+const HERO_TO   = "#D87550";
+
 type Props = {
   storyId: number;
-  /** Page-relative width — the pager passes this so each page fills its slot. */
   width:   number;
 };
 
@@ -86,79 +91,111 @@ export function StoryView({ storyId, width }: Props) {
   return (
     <ScrollView
       style={{ width }}
-      contentContainerStyle={{
-        paddingHorizontal: space.xl,
-        paddingBottom:     space.xxxl * 2,
-        paddingTop:        space.sm,
-      }}
+      contentContainerStyle={{ paddingBottom: space.xxxl * 2 }}
       showsVerticalScrollIndicator={false}
     >
-      {story.topics.length > 0 && (
-        <TopicChipRow topics={story.topics} style={{ marginBottom: space.md }} />
-      )}
+      {/* HERO — full-bleed peach gradient, cream text. */}
+      <LinearGradient
+        colors={[HERO_FROM, HERO_TO]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.hero}
+      >
+        <Meta
+          style={{
+            color:        "#FAF5EECC",
+            fontFamily:   fonts.sansSemibold,
+            letterSpacing: 1.2,
+          }}
+        >
+          {sourcesLabel.toUpperCase()}
+        </Meta>
+        <DisplayHL style={{ color: "#FAF5EE", marginTop: space.sm }}>
+          {story.headline}
+        </DisplayHL>
+        {firstReported && (
+          <Meta style={{ color: "#FAF5EECC", marginTop: space.md }}>
+            First reported {firstReported}
+          </Meta>
+        )}
+      </LinearGradient>
 
-      <DisplayHL style={{ marginBottom: space.md }}>{story.headline}</DisplayHL>
+      <View style={styles.body}>
+        {story.topics.length > 0 && (
+          <TopicChipRow topics={story.topics} style={{ marginBottom: space.xl }} />
+        )}
 
-      <Meta muted style={{ marginBottom: space.xl }}>{metaLine}</Meta>
+        {story.summary?.length > 0 && (
+          <View style={{ marginBottom: space.xl }}>
+            <SectionLabel muted style={{ marginBottom: space.sm }}>SUMMARY</SectionLabel>
+            <Body>{story.summary}</Body>
+          </View>
+        )}
 
-      {story.summary?.length > 0 && (
+        {story.key_points.length > 0 && (
+          <View style={{ marginBottom: space.xl }}>
+            <SectionLabel muted style={{ marginBottom: space.sm }}>KEY POINTS</SectionLabel>
+            {story.key_points.map((point, i) => (
+              <View
+                key={i}
+                style={{ flexDirection: "row", marginBottom: space.sm, alignItems: "flex-start" }}
+              >
+                <Body style={{ color: palette.accent, marginRight: space.sm }}>•</Body>
+                <Body style={{ flex: 1 }}>{point}</Body>
+              </View>
+            ))}
+          </View>
+        )}
+
         <View style={{ marginBottom: space.xl }}>
-          <SectionLabel muted style={{ marginBottom: space.sm }}>SUMMARY</SectionLabel>
-          <Body>{story.summary}</Body>
+          <SectionLabel muted style={{ marginBottom: space.md }}>
+            {isMulti ? `TIMELINE — ${story.article_count} SOURCES` : "SOURCE"}
+          </SectionLabel>
+
+          {isMulti ? (
+            <Timeline articles={sortedArticles} onPressArticle={openArticle} />
+          ) : sortedArticles[0] ? (
+            <Card soft onPress={() => openArticle(sortedArticles[0])}>
+              <SectionLabel style={{ color: palette.accent }}>
+                {(sortedArticles[0].source_display_name ?? sortedArticles[0].source).toUpperCase()}
+              </SectionLabel>
+              {sortedArticles[0].published_at && (
+                <Meta muted style={{ marginTop: space.xs }}>
+                  {formatRelativeTime(sortedArticles[0].published_at)}
+                </Meta>
+              )}
+              <Headline numberOfLines={3} style={{ marginTop: space.sm, fontSize: 16, lineHeight: 22 }}>
+                {sortedArticles[0].title}
+              </Headline>
+              {sortedArticles[0].author && (
+                <Meta muted style={{ marginTop: space.xs }}>By {sortedArticles[0].author}</Meta>
+              )}
+              <Body
+                accessibilityRole="link"
+                style={{
+                  marginTop:          space.sm,
+                  color:              palette.accent,
+                  textDecorationLine: "underline",
+                }}
+              >
+                Read on {sortedArticles[0].source_display_name ?? sortedArticles[0].source.replace(/_/g, " ")} →
+              </Body>
+            </Card>
+          ) : null}
         </View>
-      )}
-
-      {story.key_points.length > 0 && (
-        <View style={{ marginBottom: space.xl }}>
-          <SectionLabel muted style={{ marginBottom: space.sm }}>KEY POINTS</SectionLabel>
-          {story.key_points.map((point, i) => (
-            <View
-              key={i}
-              style={{ flexDirection: "row", marginBottom: space.sm, alignItems: "flex-start" }}
-            >
-              <Body style={{ color: palette.accent, marginRight: space.sm }}>•</Body>
-              <Body style={{ flex: 1 }}>{point}</Body>
-            </View>
-          ))}
-        </View>
-      )}
-
-      <View style={{ marginBottom: space.xl }}>
-        <SectionLabel muted style={{ marginBottom: space.md }}>
-          {isMulti ? `TIMELINE — ${story.article_count} SOURCES` : "SOURCE"}
-        </SectionLabel>
-
-        {isMulti ? (
-          <Timeline articles={sortedArticles} onPressArticle={openArticle} />
-        ) : sortedArticles[0] ? (
-          <Card soft onPress={() => openArticle(sortedArticles[0])}>
-            <SectionLabel style={{ color: palette.accent }}>
-              {(sortedArticles[0].source_display_name ?? sortedArticles[0].source).toUpperCase()}
-            </SectionLabel>
-            {sortedArticles[0].published_at && (
-              <Meta muted style={{ marginTop: space.xs }}>
-                {formatRelativeTime(sortedArticles[0].published_at)}
-              </Meta>
-            )}
-            <Headline numberOfLines={3} style={{ marginTop: space.sm, fontSize: 16, lineHeight: 22 }}>
-              {sortedArticles[0].title}
-            </Headline>
-            {sortedArticles[0].author && (
-              <Meta muted style={{ marginTop: space.xs }}>By {sortedArticles[0].author}</Meta>
-            )}
-            <Body
-              accessibilityRole="link"
-              style={{
-                marginTop:          space.sm,
-                color:              palette.accent,
-                textDecorationLine: "underline",
-              }}
-            >
-              Read on {sortedArticles[0].source_display_name ?? sortedArticles[0].source.replace(/_/g, " ")} →
-            </Body>
-          </Card>
-        ) : null}
       </View>
     </ScrollView>
   );
 }
+
+const styles = StyleSheet.create({
+  hero: {
+    paddingHorizontal: space.xl,
+    paddingTop:        space.xl,
+    paddingBottom:     space.xxxl,
+  },
+  body: {
+    paddingHorizontal: space.xl,
+    paddingTop:        space.xl,
+  },
+});

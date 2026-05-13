@@ -30,9 +30,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 
 import { StoryView } from "../../components/story/StoryView";
 import { StoryPagerHeader } from "../../components/story/StoryPagerHeader";
+import { toggleSaved, useSavedStories } from "../../lib/saved";
 import { space } from "../../lib/theme";
 import { useTheme } from "../../lib/useTheme";
 
@@ -63,6 +65,10 @@ export default function StoryDetailScreen() {
   const [activeIndex, setActiveIndex] = useState(startIndex);
   const scrollRef = useRef<ScrollView>(null);
 
+  const { isSaved } = useSavedStories();
+  const activeStoryId = pages[activeIndex] ?? currentId;
+  const activeSaved   = isSaved(activeStoryId);
+
   // Jump to the starting page on mount (and whenever width recomputes, e.g.
   // on rotation — keep the user pinned to the current story).
   useEffect(() => {
@@ -88,12 +94,47 @@ export default function StoryDetailScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["bottom"]}>
-      <StoryPagerHeader
-        total={pages.length}
-        currentIndex={activeIndex}
-        onJump={goToIndex}
-      />
+    <SafeAreaView style={{ flex: 1, backgroundColor: palette.bg }} edges={["top", "bottom"]}>
+      <View style={styles.headerRow}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          hitSlop={12}
+          style={({ pressed }) => [
+            styles.iconButton,
+            { opacity: pressed ? 0.55 : 1 },
+          ]}
+        >
+          <Ionicons name="chevron-down" size={26} color={palette.textPrimary} />
+        </Pressable>
+
+        <View style={{ flex: 1 }}>
+          <StoryPagerHeader
+            total={pages.length}
+            currentIndex={activeIndex}
+            onJump={goToIndex}
+          />
+        </View>
+
+        <Pressable
+          onPress={() => toggleSaved(activeStoryId)}
+          accessibilityRole="button"
+          accessibilityLabel={activeSaved ? "Remove from saved" : "Save story"}
+          accessibilityState={{ selected: activeSaved }}
+          hitSlop={12}
+          style={({ pressed }) => [
+            styles.iconButton,
+            { opacity: pressed ? 0.55 : 1 },
+          ]}
+        >
+          <Ionicons
+            name={activeSaved ? "bookmark" : "bookmark-outline"}
+            size={22}
+            color={palette.accent}
+          />
+        </Pressable>
+      </View>
 
       <View style={{ flex: 1 }}>
         <ScrollView
@@ -142,6 +183,16 @@ export default function StoryDetailScreen() {
 }
 
 const styles = StyleSheet.create({
+  headerRow: {
+    flexDirection:    "row",
+    alignItems:       "center",
+    paddingHorizontal: space.md,
+    paddingTop:       space.sm,
+  },
+  iconButton: {
+    paddingHorizontal: space.sm,
+    paddingVertical:   space.xs,
+  },
   tapZone: {
     position: "absolute",
     top:      0,
